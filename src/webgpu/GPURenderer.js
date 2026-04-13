@@ -40,6 +40,11 @@ export class GPURenderer {
     this._blurTextures = new Map(); // itemId → { texture, view, width, height }
     this._blurScale = 1 / 20;
 
+    // Media frame textures: video/GIF frames copied to GPU for blur compositing.
+    // Keyed by media item ID → { texture, view, width, height }
+    this._mediaElements = null; // Map<id, DOMElement> — set by App before render
+    this._mediaTextures = new Map();
+
     this._initPipelines();
     this._initBuffers();
   }
@@ -232,15 +237,16 @@ export class GPURenderer {
 
     // ── Phase 0: Render blur offscreen textures ──
     const sorted = [...items].sort((a, b) => a.z - b.z);
-    this._currentSorted = sorted; // available to _findMediaBehind
     const blurItems = sorted.filter(i => i.bgBlur && i.type !== 'connector');
 
+    this._activeMediaIds = new Set(); // track media items rendered into blur textures
     if (blurItems.length > 0) {
       this._renderBlurPasses(blurItems, sorted, zoomDpr, bgRgb, bgGrid, globalShadow, editingTextId);
     }
     // Cleanup blur textures for items no longer blurred
     const activeBlurIds = new Set(blurItems.map(i => i.id));
     this._cleanupBlurTextures(activeBlurIds);
+    this._cleanupMediaTextures(this._activeMediaIds);
 
     // ── Phase 1: Collect all draw commands ──
 
@@ -549,22 +555,8 @@ export class GPURenderer {
         const texBG = this._getTexBindGroup(blurTex.view, this.texCache.linearSampler);
         draws.push({ uniforms: bu, texBindGroup: texBG, isMatte: false });
 
-        // Blurred video/GIF copies behind the canvas, clipped to blur bounds.
-        // The blur texture has matte holes where videos are (from offscreen render),
-        // so the blurred DOM copies show through at higher z-index than originals.
-        const mediaBehind = this._findMediaBehind(item);
-        if (mediaBehind.length > 0) {
-          this._overlays.push({
-            id: item.id,
-            type: 'blur-video',
-            x: item.x, y: item.y,
-            w: item.w, h: item.h,
-            rotation: item.rotation || 0,
-            radius: item.radius ?? 2,
-            z: item.z,
-            mediaBehind,
-          });
-        }
+        // Media frames are now rendered directly into the blur texture
+        // (no matte holes), so no DOM-based blur video copies are needed.
 
         // Pass 3: text glyph overlay (text/link items still need their text drawn on top)
         if ((item.type === 'text' || item.type === 'link') && editingTextId !== item.id) {
@@ -817,33 +809,6 @@ export class GPURenderer {
     return item.shadow ?? (item.type !== 'shape' && item.type !== 'text');
   }
 
-  /** Find video/GIF items below a blur element that intersect its bounds. */
-  _findMediaBehind(blurItem) {
-    if (!this._currentSorted) return [];
-    const result = [];
-    for (const item of this._currentSorted) {
-      if (item.z >= blurItem.z) break;
-      if (item.type === 'connector') continue;
-      const isGif = item.type === 'image' && (item.isGif || isGifSrc(item.src));
-      const isMedia = item.type === 'video' || isGif;
-      if (!isMedia) continue;
-      // Intersection test
-      if (item.x + item.w < blurItem.x || item.x > blurItem.x + blurItem.w) continue;
-      if (item.y + item.h < blurItem.y || item.y > blurItem.y + blurItem.h) continue;
-      result.push({
-        id: item.id,
-        type: item.type === 'video' ? 'video' : 'gif',
-        src: item.src,
-        x: item.x, y: item.y,
-        w: item.w, h: item.h,
-        rotation: item.rotation || 0,
-        radius: item.radius ?? 2,
-        z: item.z,
-      });
-    }
-    return result;
-  }
-
   _getBgColor(item) {
     if (!item.bgColor || item.bgColor === 'transparent') return [0, 0, 0, 0];
     const op = item.bgOpacity ?? 1;
@@ -873,6 +838,55 @@ export class GPURenderer {
       if (!activeIds.has(id)) {
         entry.texture.destroy();
         this._blurTextures.delete(id);
+      }
+    }
+  }
+
+  /** Provide the live DOM media elements map so blur passes can copy video/GIF frames. */
+  setMediaElements(els) {
+    this._mediaElements = els;
+  }
+
+  /** Copy a video/GIF frame from DOM element to a GPU texture for blur compositing.
+   *  Returns { texture, view, width, height } or null if the frame isn't available. */
+  _copyMediaFrame(mediaId, domEl) {
+    let w, h;
+    if (domEl.tagName === 'VIDEO') {
+      w = domEl.videoWidth;
+      h = domEl.videoHeight;
+      if (!w || !h || domEl.readyState < 2) return null;
+    } else {
+      w = domEl.naturalWidth;
+      h = domEl.naturalHeight;
+      if (!w || !h) return null;
+    }
+
+    let entry = this._mediaTextures.get(mediaId);
+    if (!entry || entry.width !== w || entry.height !== h) {
+      if (entry) entry.texture.destroy();
+      const texture = this.device.createTexture({
+        size: [w, h],
+        format: 'rgba8unorm',
+        usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT,
+      });
+      entry = { texture, view: texture.createView(), width: w, height: h };
+      this._mediaTextures.set(mediaId, entry);
+    }
+
+    this.device.queue.copyExternalImageToTexture(
+      { source: domEl, flipY: false },
+      { texture: entry.texture },
+      [w, h],
+    );
+    return entry;
+  }
+
+  /** Clean up media frame textures for items no longer behind any blur element. */
+  _cleanupMediaTextures(activeMediaIds) {
+    for (const [id, entry] of this._mediaTextures) {
+      if (!activeMediaIds.has(id)) {
+        entry.texture.destroy();
+        this._mediaTextures.delete(id);
       }
     }
   }
@@ -911,10 +925,9 @@ export class GPURenderer {
       const bx1 = blurItem.x + blurItem.w + margin, by1 = blurItem.y + blurItem.h + margin;
 
       // Collect items below the blur element that intersect its bounds.
-      // Media (video/GIF) items get matte cutouts instead of content draws —
-      // the matte creates transparent holes in the blur texture so the blurred
-      // DOM video copy can show through. At 1/20th res the matte edges are
-      // naturally soft/blurred, giving proper frosted-glass layering.
+      // All items (including video/GIF) are rendered directly into the blur
+      // texture. Media frames are copied from DOM elements to GPU textures so
+      // the blur texture is fully opaque — no matte holes, no soft edges.
       const draws = [];
       for (const item of sorted) {
         if (item.z >= blurItem.z) break;
@@ -928,19 +941,37 @@ export class GPURenderer {
         const isMedia = item.type === 'video' || isGif;
 
         if (isMedia) {
-          // Matte cutout for media — transparent hole in blur texture
-          const mu = new Float32Array(40);
-          mu[0] = blurW; mu[1] = blurH;
-          mu[2] = offPanX; mu[3] = offPanY;
-          mu[4] = offZoom;
-          mu[5] = (item.rotation || 0) * Math.PI / 180;
-          mu[6] = item.radius ?? 2;
-          mu[7] = 1.0;
-          mu[8] = item.x; mu[9] = item.y;
-          mu[10] = item.w; mu[11] = item.h;
-          mu[12] = item.w + 2; mu[13] = item.h + 2;
-          mu[14] = 1; mu[15] = 1;
-          draws.push({ uniforms: mu, texBindGroup: this._fallbackTexBG, isMatte: true });
+          // Copy video/GIF frame from DOM element into a GPU texture and
+          // render it as a textured quad — no matte cutout needed.
+          const domEl = this._mediaElements?.get(item.id);
+          if (domEl) {
+            try {
+              const frame = this._copyMediaFrame(item.id, domEl);
+              if (frame) {
+                const mu = new Float32Array(40);
+                mu[0] = blurW; mu[1] = blurH;
+                mu[2] = offPanX; mu[3] = offPanY;
+                mu[4] = offZoom;
+                mu[5] = (item.rotation || 0) * Math.PI / 180;
+                mu[6] = item.radius ?? 2;
+                mu[7] = 1.0;
+                mu[8] = item.x; mu[9] = item.y;
+                mu[10] = item.w; mu[11] = item.h;
+                mu[12] = item.w; mu[13] = item.h; // no padding
+                mu[14] = 0; mu[15] = 0;
+                mu.set([1, 1, 1, 1], 16); // white tint — show texture as-is
+                const crop = this.texCache.coverUV(frame.width, frame.height, item.w, item.h);
+                mu[20] = crop[0]; mu[21] = crop[1]; mu[22] = crop[2]; mu[23] = crop[3];
+                mu[33] = 1; // textured
+                const texBG = this._getTexBindGroup(frame.view, this.texCache.linearSampler);
+                draws.push({ uniforms: mu, texBindGroup: texBG, isMatte: false });
+                this._activeMediaIds.add(item.id);
+                continue;
+              }
+            } catch (e) { /* frame not ready yet — skip */ }
+          }
+          // Fallback: no DOM element or frame not available — skip this media item.
+          // The blur texture will show the background color in this area.
           continue;
         }
 
@@ -1197,5 +1228,7 @@ export class GPURenderer {
     this.texCache.destroy();
     this.textRenderer.destroy();
     this.pillRenderer.destroy();
+    for (const entry of this._mediaTextures.values()) entry.texture.destroy();
+    this._mediaTextures.clear();
   }
 }

@@ -91,18 +91,13 @@ export default function App() {
   // ── Media overlay (DOM elements behind canvas for videos/GIFs) ──
   const overlayRef = useRef(null);
   const overlayElsRef = useRef(new Map()); // id → DOM element
-  // ── Blur video overlay (blurred video/GIF copies behind canvas, clipped to blur element bounds) ──
-  const blurElsRef = useRef(new Map()); // blurId → { container, children: Map<mediaId, el> }
-
   const syncOverlays = useCallback((overlays, panX, panY, zoom) => {
     const container = overlayRef.current;
     if (!container) return;
 
-    const mediaOverlays = overlays.filter(o => o.type !== 'blur-video');
-    const blurVideoOverlays = overlays.filter(o => o.type === 'blur-video');
-
-    // ── Regular media overlays (videos/GIFs — behind canvas) ──
-    const activeIds = new Set(mediaOverlays.map(o => o.id));
+    // Only regular media overlays — blur-video overlays are no longer needed
+    // because media frames are now rendered directly into blur textures on the GPU.
+    const activeIds = new Set(overlays.map(o => o.id));
     const els = overlayElsRef.current;
 
     // Remove stale elements
@@ -115,7 +110,7 @@ export default function App() {
     }
 
     // Create or update elements
-    for (const o of mediaOverlays) {
+    for (const o of overlays) {
       let el = els.get(o.id);
       if (!el) {
         if (o.type === 'video') {
@@ -156,109 +151,6 @@ export default function App() {
       el.style.transform = `scale(${invSS})${rot}`;
       el.style.transformOrigin = 'center center';
     }
-
-    // ── Blur video overlays: blurred video/GIF copies BEHIND canvas at 1/20th res ──
-    // The blur texture has matte holes where videos intersect (at 1/20th res, so
-    // the matte edges are naturally blurred). Behind the canvas, blurred video copies
-    // sit in the same DOM layer as original videos but at higher z-index (blur
-    // element's z > video's z). The container clips to the blur element's shape.
-    // Result: outside blur bounds → sharp original video; inside → blurred copy.
-    const activeBlurIds = new Set(blurVideoOverlays.map(o => o.id));
-    const blurEls = blurElsRef.current;
-
-    for (const [id, entry] of blurEls) {
-      if (!activeBlurIds.has(id)) {
-        for (const child of entry.children.values()) {
-          if (child._blurRaf) cancelAnimationFrame(child._blurRaf);
-        }
-        entry.container.remove();
-        blurEls.delete(id);
-      }
-    }
-
-    const bss = SUPERSAMPLE;
-    const bInvSS = 1 / bss;
-
-    for (const o of blurVideoOverlays) {
-      let entry = blurEls.get(o.id);
-      if (!entry) {
-        const div = document.createElement('div');
-        div.style.cssText = 'position:absolute;top:0;left:0;pointer-events:none;overflow:hidden;transform-origin:center center;';
-        container.appendChild(div);
-        entry = { container: div, children: new Map() };
-        blurEls.set(o.id, entry);
-      }
-
-      // Position behind-canvas blur container with SUPERSAMPLE math
-      // (same technique as regular video overlays: ss× size + scale(invSS))
-      const bScreenX = o.x * zoom + panX;
-      const bScreenY = o.y * zoom + panY;
-      const bScreenW = o.w * zoom;
-      const bScreenH = o.h * zoom;
-      const bDiv = entry.container;
-      bDiv.style.left = (bScreenX - bScreenW * (bss - 1) * 0.5) + 'px';
-      bDiv.style.top = (bScreenY - bScreenH * (bss - 1) * 0.5) + 'px';
-      bDiv.style.width = (bScreenW * bss) + 'px';
-      bDiv.style.height = (bScreenH * bss) + 'px';
-      bDiv.style.zIndex = o.z;
-      bDiv.style.borderRadius = (o.radius * zoom * bss) + 'px';
-      const bRot = o.rotation ? ` rotate(${o.rotation}deg)` : '';
-      bDiv.style.transform = `scale(${bInvSS})${bRot}`;
-
-      // Remove stale child media
-      const activeMediaIds = new Set((o.mediaBehind || []).map(m => m.id));
-      for (const [mid, child] of entry.children) {
-        if (!activeMediaIds.has(mid)) {
-          if (child._blurRaf) cancelAnimationFrame(child._blurRaf);
-          child.remove();
-          entry.children.delete(mid);
-        }
-      }
-
-      // Create or update blurred media copies inside the container.
-      // Both videos and GIFs use <canvas> at 1/20th pixel resolution, drawing
-      // from the original DOM elements (already playing in overlayElsRef).
-      // Canvas pixel dimensions control rasterization → guaranteed low-res blur.
-      for (const m of (o.mediaBehind || [])) {
-        let mel = entry.children.get(m.id);
-        if (!mel) {
-          mel = document.createElement('canvas');
-          mel.width = Math.max(2, Math.ceil(m.w / 20));
-          mel.height = Math.max(2, Math.ceil(m.h / 20));
-          mel.style.cssText = 'position:absolute;pointer-events:none;';
-          const ctx = mel.getContext('2d');
-          mel._blurMediaId = m.id;
-          const drawFrame = () => {
-            const src = overlayElsRef.current.get(mel._blurMediaId);
-            if (src) {
-              try { ctx.drawImage(src, 0, 0, mel.width, mel.height); } catch(e) {}
-            }
-            mel._blurRaf = requestAnimationFrame(drawFrame);
-          };
-          mel._blurRaf = requestAnimationFrame(drawFrame);
-          bDiv.appendChild(mel);
-          entry.children.set(m.id, mel);
-        }
-
-        // Position canvas in ss× local space (container is SUPERSAMPLE-scaled).
-        // Full CSS size, low pixel resolution → bilinear upscale = blur.
-        const dx = (m.x - o.x) * zoom * bss;
-        const dy = (m.y - o.y) * zoom * bss;
-        const mw = m.w * zoom * bss;
-        const mh = m.h * zoom * bss;
-        mel.style.left = dx + 'px';
-        mel.style.top = dy + 'px';
-        mel.style.width = mw + 'px';
-        mel.style.height = mh + 'px';
-        // Update pixel dimensions if element was resized
-        const pw = Math.max(2, Math.ceil(m.w / 20));
-        const ph = Math.max(2, Math.ceil(m.h / 20));
-        if (mel.width !== pw || mel.height !== ph) { mel.width = pw; mel.height = ph; }
-        const mRot = m.rotation ? `rotate(${m.rotation}deg)` : '';
-        mel.style.transform = mRot || 'none';
-        mel.style.borderRadius = (m.radius * zoom * bss) + 'px';
-      }
-    }
   }, []);
 
   // Cleanup overlay elements on unmount
@@ -269,13 +161,6 @@ export default function App() {
         el.remove();
       }
       overlayElsRef.current.clear();
-      for (const entry of blurElsRef.current.values()) {
-        for (const child of entry.children.values()) {
-          if (child._blurRaf) cancelAnimationFrame(child._blurRaf);
-        }
-        entry.container.remove();
-      }
-      blurElsRef.current.clear();
     };
   }, []);
 
@@ -296,6 +181,11 @@ export default function App() {
       const panX = vp.panRef.current.x;
       const panY = vp.panRef.current.y;
       const zoom = vp.zoomRef.current;
+      // Provide live DOM media elements so the GPU can copy video/GIF frames
+      // directly into blur textures (eliminates soft matte edge artifacts).
+      if (webgl.rendererRef.current) {
+        webgl.rendererRef.current.setMediaElements(overlayElsRef.current);
+      }
       const overlays = webgl.renderSync({
         items: renderItems,
         panX, panY, zoom,
