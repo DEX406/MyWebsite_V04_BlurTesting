@@ -549,11 +549,27 @@ export class GPURenderer {
         const texBG = this._getTexBindGroup(blurTex.view, this.texCache.linearSampler);
         draws.push({ uniforms: bu, texBindGroup: texBG, isMatte: false });
 
-        // Blurred video/GIF copies behind the canvas, clipped to blur bounds.
-        // The blur texture has matte holes where videos are (from offscreen render),
-        // so the blurred DOM copies show through at higher z-index than originals.
+        // Smooth SDF cutouts for media behind blur — the blur texture is now
+        // solid (no matte holes at 1/20th res), so we punch clean full-resolution
+        // holes here on the main canvas.  The blurred DOM video/GIF copies
+        // behind the canvas fill these cutout holes naturally.
         const mediaBehind = this._findMediaBehind(item);
         if (mediaBehind.length > 0) {
+          for (const m of mediaBehind) {
+            const mu = new Float32Array(40);
+            mu[0] = resW; mu[1] = resH;
+            mu[2] = panX; mu[3] = panY;
+            mu[4] = zoom;
+            mu[5] = (m.rotation || 0) * Math.PI / 180;
+            mu[6] = m.radius ?? 2;
+            mu[7] = 1.0;
+            mu[8] = m.x; mu[9] = m.y;
+            mu[10] = m.w; mu[11] = m.h;
+            mu[12] = m.w + 2; mu[13] = m.h + 2;
+            mu[14] = 1; mu[15] = 1;
+            draws.push({ uniforms: mu, texBindGroup: this._fallbackTexBG, isMatte: true });
+          }
+
           this._overlays.push({
             id: item.id,
             type: 'blur-video',
@@ -911,10 +927,9 @@ export class GPURenderer {
       const bx1 = blurItem.x + blurItem.w + margin, by1 = blurItem.y + blurItem.h + margin;
 
       // Collect items below the blur element that intersect its bounds.
-      // Media (video/GIF) items get matte cutouts instead of content draws —
-      // the matte creates transparent holes in the blur texture so the blurred
-      // DOM video copy can show through. At 1/20th res the matte edges are
-      // naturally soft/blurred, giving proper frosted-glass layering.
+      // Media (video/GIF) items are skipped here — smooth full-resolution SDF
+      // cutouts are drawn on the main canvas instead, so the blur texture
+      // stays solid and the blurred DOM copies fill the holes cleanly.
       const draws = [];
       for (const item of sorted) {
         if (item.z >= blurItem.z) break;
@@ -928,19 +943,9 @@ export class GPURenderer {
         const isMedia = item.type === 'video' || isGif;
 
         if (isMedia) {
-          // Matte cutout for media — transparent hole in blur texture
-          const mu = new Float32Array(40);
-          mu[0] = blurW; mu[1] = blurH;
-          mu[2] = offPanX; mu[3] = offPanY;
-          mu[4] = offZoom;
-          mu[5] = (item.rotation || 0) * Math.PI / 180;
-          mu[6] = item.radius ?? 2;
-          mu[7] = 1.0;
-          mu[8] = item.x; mu[9] = item.y;
-          mu[10] = item.w; mu[11] = item.h;
-          mu[12] = item.w + 2; mu[13] = item.h + 2;
-          mu[14] = 1; mu[15] = 1;
-          draws.push({ uniforms: mu, texBindGroup: this._fallbackTexBG, isMatte: true });
+          // Skip media — smooth SDF cutouts are done on the main canvas at
+          // full resolution so edges are clean. The blurred DOM video/GIF
+          // copies behind the canvas fill the cutout holes naturally.
           continue;
         }
 
