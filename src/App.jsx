@@ -189,19 +189,23 @@ export default function App() {
         blurEls.set(o.id, entry);
       }
 
-      // Position behind-canvas blur container with SUPERSAMPLE math
-      // (same technique as regular video overlays: ss× size + scale(invSS))
+      // Position behind-canvas blur container with SUPERSAMPLE math.
+      // Expand by a few CSS pixels past the blur element bounds so the blurred
+      // video extends beyond the GPU SDF transition zone. This prevents sharp
+      // content from leaking through semi-transparent SDF edge pixels — the GPU
+      // SDF handles the actual shape clipping, not CSS border-radius.
+      const blurPad = 3; // CSS pixels of extra coverage past SDF edge
       const bScreenX = o.x * zoom + panX;
       const bScreenY = o.y * zoom + panY;
-      const bScreenW = o.w * zoom;
-      const bScreenH = o.h * zoom;
+      const bScreenW = o.w * zoom + blurPad * 2;
+      const bScreenH = o.h * zoom + blurPad * 2;
       const bDiv = entry.container;
-      bDiv.style.left = (bScreenX - bScreenW * (bss - 1) * 0.5) + 'px';
-      bDiv.style.top = (bScreenY - bScreenH * (bss - 1) * 0.5) + 'px';
+      bDiv.style.left = ((bScreenX - blurPad) - bScreenW * (bss - 1) * 0.5) + 'px';
+      bDiv.style.top = ((bScreenY - blurPad) - bScreenH * (bss - 1) * 0.5) + 'px';
       bDiv.style.width = (bScreenW * bss) + 'px';
       bDiv.style.height = (bScreenH * bss) + 'px';
       bDiv.style.zIndex = o.z;
-      bDiv.style.borderRadius = (o.radius * zoom * bss) + 'px';
+      bDiv.style.borderRadius = '0';
       const bRot = o.rotation ? ` rotate(${o.rotation}deg)` : '';
       bDiv.style.transform = `scale(${bInvSS})${bRot}`;
 
@@ -242,8 +246,9 @@ export default function App() {
 
         // Position canvas in ss× local space (container is SUPERSAMPLE-scaled).
         // Full CSS size, low pixel resolution → bilinear upscale = blur.
-        const dx = (m.x - o.x) * zoom * bss;
-        const dy = (m.y - o.y) * zoom * bss;
+        // Offset by blurPad*bss to account for the expanded container.
+        const dx = (m.x - o.x) * zoom * bss + blurPad * bss;
+        const dy = (m.y - o.y) * zoom * bss + blurPad * bss;
         const mw = m.w * zoom * bss;
         const mh = m.h * zoom * bss;
         mel.style.left = dx + 'px';
