@@ -2,8 +2,8 @@
 // Renders: grid background, all content items, selection outlines, connectors.
 
 import {
-  GRID_SHADER, QUAD_SHADER, MATTE_SHADER, LINE_SHADER, CIRCLE_SHADER,
-  GRID_UNIFORM_SIZE, QUAD_UNIFORM_SIZE, LINE_UNIFORM_SIZE, CIRCLE_UNIFORM_SIZE,
+  GRID_SHADER, QUAD_SHADER, MATTE_SHADER, LINE_SHADER, CIRCLE_SHADER, BLUR_SHADER,
+  GRID_UNIFORM_SIZE, QUAD_UNIFORM_SIZE, LINE_UNIFORM_SIZE, CIRCLE_UNIFORM_SIZE, BLUR_UNIFORM_SIZE,
 } from './shaders.js';
 import { TextureCache } from './TextureCache.js';
 import { TextRenderer } from './TextRenderer.js';
@@ -36,9 +36,10 @@ export class GPURenderer {
     this._align = Math.max(256, device.limits.minUniformBufferOffsetAlignment);
     this._bindGroupCache = new WeakMap(); // GPUTextureView → GPUBindGroup
 
-    // Blur effect: offscreen textures for 1/20th-res background capture
+    // Blur effect: offscreen textures for 1:1 GPU Gaussian blur
     this._blurTextures = new Map(); // itemId → { texture, view, width, height }
-    this._blurScale = 1 / 20;
+    this._blurScale = 1;
+    this._blurIntermediate = null; // shared ping-pong texture for Gaussian blur passes
 
     this._initPipelines();
     this._initBuffers();
@@ -122,6 +123,17 @@ export class GPURenderer {
       vertex: { module: circleModule, entryPoint: 'vs_main', buffers: [vertexLayout] },
       fragment: { module: circleModule, entryPoint: 'fs_main', targets: [{ format, blend: blendAlpha }] },
     });
+
+    // ── Blur (separable Gaussian post-process) ──
+    const blurModule = device.createShaderModule({ code: BLUR_SHADER });
+    this._blurBGL0 = device.createBindGroupLayout({
+      entries: [{ binding: 0, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } }],
+    });
+    this.blurPipeline = device.createRenderPipeline({
+      layout: device.createPipelineLayout({ bindGroupLayouts: [this._blurBGL0, this._quadBGL1] }),
+      vertex: { module: blurModule, entryPoint: 'vs_main', buffers: [vertexLayout] },
+      fragment: { module: blurModule, entryPoint: 'fs_main', targets: [{ format }] },
+    });
   }
 
   // ── Buffer creation ────────────────────────────────────────────────────────
@@ -159,6 +171,12 @@ export class GPURenderer {
 
     // Fallback texture bind group (used when no texture is bound)
     this._fallbackTexBG = this._getTexBindGroup(this.texCache.fallback.view, this.texCache.nearestSampler);
+
+    // Blur Gaussian pass uniform buffers (H and V directions)
+    this._blurHUniformBuf = device.createBuffer({ size: BLUR_UNIFORM_SIZE, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    this._blurVUniformBuf = device.createBuffer({ size: BLUR_UNIFORM_SIZE, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    this._blurHBindGroup = device.createBindGroup({ layout: this._blurBGL0, entries: [{ binding: 0, resource: { buffer: this._blurHUniformBuf } }] });
+    this._blurVBindGroup = device.createBindGroup({ layout: this._blurBGL0, entries: [{ binding: 0, resource: { buffer: this._blurVUniformBuf } }] });
   }
 
   _createStaticVB(data) {
@@ -530,28 +548,53 @@ export class GPURenderer {
     let texView = null;
     let sampler = this.texCache.nearestSampler;
 
-    // ── Blur element: render blur texture as background ──
+    // ── Blur element: matte cutout + blur texture as background ──
+    // Blur effect is always 100% opaque. Opacity slider controls only the
+    // colored fill overlay drawn on top of the blur.
     if (item.bgBlur) {
       const blurTex = this._blurTextures.get(item.id);
       if (blurTex) {
-        // Pass 1: shadow + border quad (with transparent fill so shadow shows)
+        // Pass 1: shadow + border quad (full opacity, transparent fill)
         u[33] = 0; u.set([0, 0, 0, 0], 16);
         draws.push({ uniforms: new Float32Array(u), texBindGroup: this._fallbackTexBG, isMatte: false });
 
-        // Pass 2: blur texture quad (content fill, no shadow)
+        // Pass 2: matte cutout at blur element bounds (always full punch-through)
+        const mu = new Float32Array(40);
+        mu[0] = resW; mu[1] = resH;
+        mu[2] = panX; mu[3] = panY;
+        mu[4] = zoom;
+        mu[5] = (item.rotation || 0) * Math.PI / 180;
+        mu[6] = item.radius ?? 2;
+        mu[7] = 1.0;
+        mu[8] = item.x; mu[9] = item.y;
+        mu[10] = item.w; mu[11] = item.h;
+        mu[12] = item.w + 2; mu[13] = item.h + 2;
+        mu[14] = 1; mu[15] = 1;
+        draws.push({ uniforms: mu, texBindGroup: this._fallbackTexBG, isMatte: true });
+
+        // Pass 3: blur texture quad (always full opacity)
         const bu = new Float32Array(u);
-        bu[12] = item.w; bu[13] = item.h; // no shadow padding
+        bu[12] = item.w; bu[13] = item.h;
         bu[14] = 0; bu[15] = 0;
         bu[33] = 1; // textured
-        bu[34] = 0; // no shadow on this pass
-        bu.set([1, 1, 1, 1], 16); // white tint — show texture as-is
-        bu[20] = 0; bu[21] = 0; bu[22] = 1; bu[23] = 1; // full UV
-        const texBG = this._getTexBindGroup(blurTex.view, this.texCache.linearSampler);
-        draws.push({ uniforms: bu, texBindGroup: texBG, isMatte: false });
+        bu[34] = 0; // no shadow
+        bu.set([1, 1, 1, 1], 16);
+        bu[20] = 0; bu[21] = 0; bu[22] = 1; bu[23] = 1;
+        const blurTexBG = this._getTexBindGroup(blurTex.view, this.texCache.linearSampler);
+        draws.push({ uniforms: bu, texBindGroup: blurTexBG, isMatte: false });
 
-        // Blurred video/GIF copies behind the canvas, clipped to blur bounds.
-        // The blur texture has matte holes where videos are (from offscreen render),
-        // so the blurred DOM copies show through at higher z-index than originals.
+        // Pass 4: colored fill overlay (bgColor at bgOpacity — the only thing opacity controls)
+        const bgColor = this._getBgColor(item);
+        if (bgColor[3] > 0) {
+          const fu = new Float32Array(u);
+          fu[12] = item.w; fu[13] = item.h;
+          fu[14] = 0; fu[15] = 0;
+          fu[33] = 0; fu[34] = 0;
+          fu.set(bgColor, 16);
+          draws.push({ uniforms: fu, texBindGroup: this._fallbackTexBG, isMatte: false });
+        }
+
+        // CSS backdrop-filter overlay for live media blurring (always full opacity)
         const mediaBehind = this._findMediaBehind(item);
         if (mediaBehind.length > 0) {
           this._overlays.push({
@@ -562,25 +605,25 @@ export class GPURenderer {
             rotation: item.rotation || 0,
             radius: item.radius ?? 2,
             z: item.z,
-            mediaBehind,
+            opacity: 1,
+            blurRadius: 12,
           });
         }
 
-        // Pass 3: text glyph overlay (text/link items still need their text drawn on top)
+        // Pass 5: text glyph overlay (full opacity)
         if ((item.type === 'text' || item.type === 'link') && editingTextId !== item.id) {
           const entry = this.textRenderer.get(item);
           const textRgba = hexToRgba(item.color || '#C2C0B6');
           const tu = new Float32Array(u);
           tu[12] = item.w; tu[13] = item.h;
           tu[14] = 0; tu[15] = 0;
-          tu[33] = 0; tu[34] = 0; tu[38] = 1; // textAlpha
+          tu[33] = 0; tu[34] = 0; tu[38] = 1;
           tu.set(textRgba, 28);
-          const texBG = this._getTexBindGroup(entry.view, this.textRenderer.sampler);
-          draws.push({ uniforms: tu, texBindGroup: texBG, isMatte: false });
+          const textTexBG = this._getTexBindGroup(entry.view, this.textRenderer.sampler);
+          draws.push({ uniforms: tu, texBindGroup: textTexBG, isMatte: false });
         }
         return;
       }
-      // If no blur texture yet (shouldn't happen), fall through to normal rendering
     }
 
     if (item.type === 'image' || item.type === 'video') {
@@ -875,34 +918,48 @@ export class GPURenderer {
         this._blurTextures.delete(id);
       }
     }
+    if (activeIds.size === 0 && this._blurIntermediate) {
+      this._blurIntermediate.texture.destroy();
+      this._blurIntermediate = null;
+    }
   }
 
-  /** Render items below each blur element into a small offscreen texture.
-   *  Each blur element gets its own command buffer submission to avoid
-   *  uniform buffer conflicts between sequential render passes. */
+  _getOrCreateBlurIntermediate(width, height) {
+    const existing = this._blurIntermediate;
+    if (existing && existing.width === width && existing.height === height) return existing;
+    if (existing) existing.texture.destroy();
+    const texture = this.device.createTexture({
+      size: [width, height],
+      format: this.format,
+      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+    });
+    const view = texture.createView();
+    this._blurIntermediate = { texture, view, width, height };
+    return this._blurIntermediate;
+  }
+
+  /** Render items below each blur element into a 1:1 offscreen texture,
+   *  then apply two-pass separable Gaussian blur (H→V, repeated twice). */
   _renderBlurPasses(blurItems, sorted, zoomDpr, bgRgb, bgGrid, globalShadow, editingTextId) {
     const device = this.device;
     const A = this._align;
-    const scale = this._blurScale;
+    const BLUR_STEP = 4; // pixel spacing between Gaussian taps
 
     for (const blurItem of blurItems) {
       if (blurItem.w <= 0 || blurItem.h <= 0) continue;
-      // Compute blur texture size (1/20th of element's WORLD size — zoom-independent).
-      // This ensures consistent blur appearance regardless of zoom level.
-      const blurW = Math.max(2, Math.ceil(blurItem.w * scale));
-      const blurH = Math.max(2, Math.ceil(blurItem.h * scale));
-      const blurTex = this._getOrCreateBlurTexture(blurItem.id, blurW, blurH);
 
-      // Compute offscreen viewport uniforms:
-      // Map blur element's world area to fill the offscreen texture.
-      // Note: the capture is axis-aligned; for rotated elements the blur
-      // texture captures the unrotated rect. At 1/20th res this is imperceptible.
+      // 1:1 world-pixel resolution blur texture
+      const blurW = Math.max(2, Math.ceil(blurItem.w));
+      const blurH = Math.max(2, Math.ceil(blurItem.h));
+      const texA = this._getOrCreateBlurTexture(blurItem.id, blurW, blurH);
+      const texB = this._getOrCreateBlurIntermediate(blurW, blurH);
+
+      // Offscreen viewport: map blur element's world area to fill texture
       const offZoom = blurW / blurItem.w;
       const offPanX = -blurItem.x * offZoom;
       const offPanY = -blurItem.y * offZoom;
 
-      // For rotated blur elements, expand the intersection margin to avoid
-      // incorrectly culling items visible through the rotated shape.
+      // Expand intersection bounds for rotated elements
       const rot = blurItem.rotation || 0;
       const margin = rot !== 0
         ? Math.max(blurItem.w, blurItem.h) * Math.abs(Math.sin((rot * Math.PI / 180) * 2)) * 0.5
@@ -911,16 +968,13 @@ export class GPURenderer {
       const bx1 = blurItem.x + blurItem.w + margin, by1 = blurItem.y + blurItem.h + margin;
 
       // Collect items below the blur element that intersect its bounds.
-      // Media (video/GIF) items get matte cutouts instead of content draws —
-      // the matte creates transparent holes in the blur texture so the blurred
-      // DOM video copy can show through. At 1/20th res the matte edges are
-      // naturally soft/blurred, giving proper frosted-glass layering.
+      // Media (video/GIF) items get matte cutouts — transparent holes so the
+      // CSS backdrop-filter div can blur live media through the canvas.
       const draws = [];
       for (const item of sorted) {
         if (item.z >= blurItem.z) break;
         if (item.bgBlur) continue;
         if (item.type === 'connector') continue;
-        // Intersection test (with rotation margin)
         if (item.x + item.w < bx0 || item.x > bx1) continue;
         if (item.y + item.h < by0 || item.y > by1) continue;
 
@@ -928,7 +982,6 @@ export class GPURenderer {
         const isMedia = item.type === 'video' || isGif;
 
         if (isMedia) {
-          // Matte cutout for media — transparent hole in blur texture
           const mu = new Float32Array(40);
           mu[0] = blurW; mu[1] = blurH;
           mu[2] = offPanX; mu[3] = offPanY;
@@ -947,15 +1000,7 @@ export class GPURenderer {
         this._collectItem(item, offPanX, offPanY, offZoom, blurW, blurH, globalShadow, editingTextId, draws);
       }
 
-      // Write grid uniforms for offscreen (fills with bg color; grid dots invisible at 1/20th)
-      const gridData = new Float32Array(32);
-      gridData[0] = offPanX; gridData[1] = offPanY;
-      gridData[2] = offZoom;
-      gridData[4] = blurW; gridData[5] = blurH;
-      gridData.set([bgRgb[0], bgRgb[1], bgRgb[2], 1], 8);
-      device.queue.writeBuffer(this._blurGridUniformBuf, 0, gridData);
-
-      // Write quad uniforms for offscreen draws
+      // Write quad uniforms for item draws
       if (draws.length > 0) {
         const quadBuf = new ArrayBuffer(A * draws.length);
         for (let i = 0; i < draws.length; i++) {
@@ -964,40 +1009,64 @@ export class GPURenderer {
         device.queue.writeBuffer(this._blurQuadUniformBuf, 0, new Uint8Array(quadBuf));
       }
 
-      // Each blur element gets its own encoder+submit so uniform buffers
-      // are consumed before the next blur element overwrites them.
+      // Write blur direction uniforms (both written before encoder, used in different passes)
+      const hDir = new Float32Array(4);
+      hDir[0] = BLUR_STEP / blurW;
+      device.queue.writeBuffer(this._blurHUniformBuf, 0, hDir);
+      const vDir = new Float32Array(4);
+      vDir[1] = BLUR_STEP / blurH;
+      device.queue.writeBuffer(this._blurVUniformBuf, 0, vDir);
+
+      // Texture bind groups for blur source sampling
+      const texBgA = this._getTexBindGroup(texA.view, this.texCache.linearSampler);
+      const texBgB = this._getTexBindGroup(texB.view, this.texCache.linearSampler);
+
       const encoder = device.createCommandEncoder();
-      const pass = encoder.beginRenderPass({
+
+      // ── Pass 1: Render items into texture A ──
+      const p1 = encoder.beginRenderPass({
         colorAttachments: [{
-          view: blurTex.view,
+          view: texA.view,
           clearValue: { r: bgRgb[0], g: bgRgb[1], b: bgRgb[2], a: 1 },
-          loadOp: 'clear',
-          storeOp: 'store',
+          loadOp: 'clear', storeOp: 'store',
         }],
       });
-      pass.setViewport(0, 0, blurW, blurH, 0, 1);
-
-      // Draw background fill (fullscreen quad with grid shader for bg color)
-      pass.setPipeline(this.gridPipeline);
-      pass.setBindGroup(0, this._blurGridBindGroup);
-      pass.setVertexBuffer(0, this.gridVertBuf);
-      pass.draw(6);
-
-      // Draw content items
+      p1.setViewport(0, 0, blurW, blurH, 0, 1);
       if (draws.length > 0) {
-        pass.setVertexBuffer(0, this.quadVertBuf);
+        p1.setVertexBuffer(0, this.quadVertBuf);
         let curPipe = null;
         for (let i = 0; i < draws.length; i++) {
           const draw = draws[i];
           const pipeline = draw.isMatte ? this.mattePipeline : this.quadPipeline;
-          if (pipeline !== curPipe) { pass.setPipeline(pipeline); curPipe = pipeline; }
-          pass.setBindGroup(0, this._blurQuadBindGroup, [A * i]);
-          pass.setBindGroup(1, draw.texBindGroup);
-          pass.draw(6);
+          if (pipeline !== curPipe) { p1.setPipeline(pipeline); curPipe = pipeline; }
+          p1.setBindGroup(0, this._blurQuadBindGroup, [A * i]);
+          p1.setBindGroup(1, draw.texBindGroup);
+          p1.draw(6);
         }
       }
+      p1.end();
 
-      pass.end();
+      // ── Gaussian blur: 2 iterations of H→V for strong frosted-glass effect ──
+      const blurPass = (target, srcBg, dirBg) => {
+        const p = encoder.beginRenderPass({
+          colorAttachments: [{ view: target, loadOp: 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 0 } }],
+        });
+        p.setViewport(0, 0, blurW, blurH, 0, 1);
+        p.setPipeline(this.blurPipeline);
+        p.setBindGroup(0, dirBg);
+        p.setBindGroup(1, srcBg);
+        p.setVertexBuffer(0, this.quadVertBuf);
+        p.draw(6);
+        p.end();
+      };
+
+      // Iteration 1: H-blur A→B, V-blur B→A
+      blurPass(texB.view, texBgA, this._blurHBindGroup);
+      blurPass(texA.view, texBgB, this._blurVBindGroup);
+      // Iteration 2: H-blur A→B, V-blur B→A
+      blurPass(texB.view, texBgA, this._blurHBindGroup);
+      blurPass(texA.view, texBgB, this._blurVBindGroup);
+
       device.queue.submit([encoder.finish()]);
     }
   }
@@ -1197,5 +1266,11 @@ export class GPURenderer {
     this.texCache.destroy();
     this.textRenderer.destroy();
     this.pillRenderer.destroy();
+    for (const entry of this._blurTextures.values()) entry.texture.destroy();
+    this._blurTextures.clear();
+    if (this._blurIntermediate) {
+      this._blurIntermediate.texture.destroy();
+      this._blurIntermediate = null;
+    }
   }
 }

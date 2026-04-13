@@ -388,3 +388,51 @@ fn fs_main(in: CircleVsOutput) -> @location(0) vec4<f32> {
   return u.color;
 }
 `;
+
+// ── Gaussian blur shader ──────────────────────────────────────────────────────
+// Fullscreen-quad 13-tap separable Gaussian blur (σ ≈ 2 in tap units).
+// Direction uniform controls horizontal vs vertical pass.
+// Blur step (pixel spacing between taps) is baked into the direction vector.
+// Uniform layout (16 bytes / 4 floats):
+//   [0] direction.x  [1] direction.y  [2-3] _pad
+
+export const BLUR_UNIFORM_SIZE = 16;
+
+export const BLUR_SHADER = `
+struct BlurUniforms {
+  direction: vec2<f32>,  // texel-space step: (step/w, 0) or (0, step/h)
+  _pad: vec2<f32>,
+};
+
+struct BlurVsOutput {
+  @builtin(position) pos: vec4<f32>,
+  @location(0) uv: vec2<f32>,
+};
+
+@group(0) @binding(0) var<uniform> u: BlurUniforms;
+@group(1) @binding(0) var t_src: texture_2d<f32>;
+@group(1) @binding(1) var s_src: sampler;
+
+@vertex
+fn vs_main(@location(0) a_pos: vec2<f32>) -> BlurVsOutput {
+  var out: BlurVsOutput;
+  out.uv = a_pos;
+  var ndc = a_pos * 2.0 - 1.0;
+  ndc.y = -ndc.y;
+  out.pos = vec4<f32>(ndc, 0.0, 1.0);
+  return out;
+}
+
+@fragment
+fn fs_main(in: BlurVsOutput) -> @location(0) vec4<f32> {
+  // 13-tap Gaussian (sigma=2 in tap units, normalized weights)
+  var col = textureSample(t_src, s_src, in.uv) * 0.199676;
+  col += (textureSample(t_src, s_src, in.uv + u.direction) + textureSample(t_src, s_src, in.uv - u.direction)) * 0.176221;
+  col += (textureSample(t_src, s_src, in.uv + u.direction * 2.0) + textureSample(t_src, s_src, in.uv - u.direction * 2.0)) * 0.121119;
+  col += (textureSample(t_src, s_src, in.uv + u.direction * 3.0) + textureSample(t_src, s_src, in.uv - u.direction * 3.0)) * 0.064832;
+  col += (textureSample(t_src, s_src, in.uv + u.direction * 4.0) + textureSample(t_src, s_src, in.uv - u.direction * 4.0)) * 0.027025;
+  col += (textureSample(t_src, s_src, in.uv + u.direction * 5.0) + textureSample(t_src, s_src, in.uv - u.direction * 5.0)) * 0.008775;
+  col += (textureSample(t_src, s_src, in.uv + u.direction * 6.0) + textureSample(t_src, s_src, in.uv - u.direction * 6.0)) * 0.002219;
+  return col;
+}
+`;
