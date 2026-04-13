@@ -166,6 +166,7 @@ export default function App() {
 
     for (const [id, el] of blurEls) {
       if (!activeBlurIds.has(id)) {
+        if (el._blurRaf) cancelAnimationFrame(el._blurRaf);
         el.remove();
         blurEls.delete(id);
       }
@@ -181,6 +182,15 @@ export default function App() {
         el.style.cssText = 'position:absolute;top:0;left:0;pointer-events:none;overflow:hidden;transform-origin:center center;';
         container.appendChild(el);
         blurEls.set(o.id, el);
+        // rAF loop forces browser to re-composite backdrop-filter every frame,
+        // keeping the blur live over animated GIFs and videos
+        let tick = false;
+        const repaint = () => {
+          el.style.opacity = tick ? '1' : '0.999';
+          tick = !tick;
+          el._blurRaf = requestAnimationFrame(repaint);
+        };
+        el._blurRaf = requestAnimationFrame(repaint);
       }
 
       const bScreenX = o.x * zoom + panX;
@@ -214,6 +224,7 @@ export default function App() {
       }
       overlayElsRef.current.clear();
       for (const el of blurElsRef.current.values()) {
+        if (el._blurRaf) cancelAnimationFrame(el._blurRaf);
         el.remove();
       }
       blurElsRef.current.clear();
