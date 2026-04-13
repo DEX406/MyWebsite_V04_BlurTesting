@@ -40,6 +40,10 @@ export class GPURenderer {
     this._blurTextures = new Map(); // itemId → { texture, view, width, height }
     this._blurScale = 1 / 20;
 
+    // Media-in-blur: capture video/GIF frames directly into GPU blur textures
+    this._mediaBlurCanvases = new Map(); // mediaId → { canvas, ctx, width, height }
+    this._mediaBlurTextures = new Map(); // mediaId → { texture, view, width, height }
+
     this._initPipelines();
     this._initBuffers();
   }
@@ -206,8 +210,9 @@ export class GPURenderer {
 
   // ── Main render ────────────────────────────────────────────────────────────
 
-  render({ items, panX, panY, zoom, bgGrid, globalShadow, selectedIds, editingTextId }) {
+  render({ items, panX, panY, zoom, bgGrid, globalShadow, selectedIds, editingTextId, mediaSources }) {
     this._overlays = []; // media overlay data for DOM positioning
+    this._mediaSources = mediaSources || new Map();
     const device = this.device;
     const dpr = (window.devicePixelRatio || 1) * SUPERSAMPLE;
     const A = this._align;
@@ -549,22 +554,8 @@ export class GPURenderer {
         const texBG = this._getTexBindGroup(blurTex.view, this.texCache.linearSampler);
         draws.push({ uniforms: bu, texBindGroup: texBG, isMatte: false });
 
-        // Blurred video/GIF copies behind the canvas, clipped to blur bounds.
-        // The blur texture has matte holes where videos are (from offscreen render),
-        // so the blurred DOM copies show through at higher z-index than originals.
-        const mediaBehind = this._findMediaBehind(item);
-        if (mediaBehind.length > 0) {
-          this._overlays.push({
-            id: item.id,
-            type: 'blur-video',
-            x: item.x, y: item.y,
-            w: item.w, h: item.h,
-            rotation: item.rotation || 0,
-            radius: item.radius ?? 2,
-            z: item.z,
-            mediaBehind,
-          });
-        }
+        // No blur-video DOM overlays needed — video/GIF frames are drawn
+        // directly into the blur texture by _renderBlurPasses.
 
         // Pass 3: text glyph overlay (text/link items still need their text drawn on top)
         if ((item.type === 'text' || item.type === 'link') && editingTextId !== item.id) {
@@ -875,6 +866,14 @@ export class GPURenderer {
         this._blurTextures.delete(id);
       }
     }
+    // Cleanup media blur textures/canvases for items no longer in any blur pass
+    for (const [id, mt] of this._mediaBlurTextures) {
+      if (!this._activeMediaInBlur || !this._activeMediaInBlur.has(id)) {
+        mt.texture.destroy();
+        this._mediaBlurTextures.delete(id);
+        this._mediaBlurCanvases.delete(id);
+      }
+    }
   }
 
   /** Render items below each blur element into a small offscreen texture.
@@ -884,6 +883,7 @@ export class GPURenderer {
     const device = this.device;
     const A = this._align;
     const scale = this._blurScale;
+    this._activeMediaInBlur = new Set();
 
     for (const blurItem of blurItems) {
       if (blurItem.w <= 0 || blurItem.h <= 0) continue;
@@ -928,19 +928,76 @@ export class GPURenderer {
         const isMedia = item.type === 'video' || isGif;
 
         if (isMedia) {
-          // Matte cutout for media — transparent hole in blur texture
-          const mu = new Float32Array(40);
-          mu[0] = blurW; mu[1] = blurH;
-          mu[2] = offPanX; mu[3] = offPanY;
-          mu[4] = offZoom;
-          mu[5] = (item.rotation || 0) * Math.PI / 180;
-          mu[6] = item.radius ?? 2;
-          mu[7] = 1.0;
-          mu[8] = item.x; mu[9] = item.y;
-          mu[10] = item.w; mu[11] = item.h;
-          mu[12] = item.w + 2; mu[13] = item.h + 2;
-          mu[14] = 1; mu[15] = 1;
-          draws.push({ uniforms: mu, texBindGroup: this._fallbackTexBG, isMatte: true });
+          // Draw video/GIF frame directly into the blur texture (no matte hole).
+          // Capture from the DOM element, downsample to blur-res, upload to GPU.
+          const src = this._mediaSources.get(item.id);
+          if (src) {
+            this._activeMediaInBlur.add(item.id);
+            const texW = Math.max(2, Math.ceil(item.w * scale));
+            const texH = Math.max(2, Math.ceil(item.h * scale));
+
+            // Get/create small canvas for downsampling
+            let mc = this._mediaBlurCanvases.get(item.id);
+            if (!mc || mc.width !== texW || mc.height !== texH) {
+              const c = document.createElement('canvas');
+              c.width = texW; c.height = texH;
+              mc = { canvas: c, ctx: c.getContext('2d'), width: texW, height: texH };
+              this._mediaBlurCanvases.set(item.id, mc);
+            }
+
+            // Draw video frame with object-fit:cover crop
+            try {
+              const vidW = src.videoWidth || src.naturalWidth || item.w;
+              const vidH = src.videoHeight || src.naturalHeight || item.h;
+              const vidAR = vidW / vidH;
+              const itemAR = item.w / item.h;
+              let sx, sy, sw, sh;
+              if (vidAR > itemAR) {
+                sh = vidH; sw = vidH * itemAR; sx = (vidW - sw) / 2; sy = 0;
+              } else {
+                sw = vidW; sh = vidW / itemAR; sx = 0; sy = (vidH - sh) / 2;
+              }
+              mc.ctx.drawImage(src, sx, sy, sw, sh, 0, 0, texW, texH);
+            } catch(e) { continue; }
+
+            // Get/create GPU texture for this media
+            let mt = this._mediaBlurTextures.get(item.id);
+            if (!mt || mt.width !== texW || mt.height !== texH) {
+              if (mt) mt.texture.destroy();
+              const tex = device.createTexture({
+                size: [texW, texH],
+                format: this.format,
+                usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT,
+              });
+              mt = { texture: tex, view: tex.createView(), width: texW, height: texH };
+              this._mediaBlurTextures.set(item.id, mt);
+            }
+
+            // Upload canvas to GPU
+            device.queue.copyExternalImageToTexture(
+              { source: mc.canvas },
+              { texture: mt.texture },
+              [texW, texH]
+            );
+
+            // Draw as textured quad in the offscreen blur texture
+            const u = new Float32Array(40);
+            u[0] = blurW; u[1] = blurH;
+            u[2] = offPanX; u[3] = offPanY;
+            u[4] = offZoom;
+            u[5] = (item.rotation || 0) * Math.PI / 180;
+            u[6] = item.radius ?? 2;
+            u[7] = 1.0;
+            u[8] = item.x; u[9] = item.y;
+            u[10] = item.w; u[11] = item.h;
+            u[12] = item.w; u[13] = item.h;
+            u[14] = 0; u[15] = 0;
+            u.set([1, 1, 1, 1], 16); // white tint — show texture as-is
+            u[20] = 0; u[21] = 0; u[22] = 1; u[23] = 1; // full UV
+            u[33] = 1; // textured
+            const texBG = this._getTexBindGroup(mt.view, this.texCache.linearSampler);
+            draws.push({ uniforms: u, texBindGroup: texBG, isMatte: false });
+          }
           continue;
         }
 
