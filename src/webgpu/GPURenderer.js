@@ -549,32 +549,30 @@ export class GPURenderer {
     let sampler = this.texCache.nearestSampler;
 
     // ── Blur element: matte cutout + blur texture as background ──
+    // Blur effect is always 100% opaque. Opacity slider controls only the
+    // colored fill overlay drawn on top of the blur.
     if (item.bgBlur) {
       const blurTex = this._blurTextures.get(item.id);
       if (blurTex) {
-        const opacity = item.bgOpacity ?? 1;
-        u[7] = opacity;
-
-        // Pass 1: shadow + border quad (with transparent fill so shadow shows)
+        // Pass 1: shadow + border quad (full opacity, transparent fill)
         u[33] = 0; u.set([0, 0, 0, 0], 16);
         draws.push({ uniforms: new Float32Array(u), texBindGroup: this._fallbackTexBG, isMatte: false });
 
-        // Pass 2: matte cutout at blur element bounds (punch hole in main canvas
-        // so CSS backdrop-filter and blur texture show through)
+        // Pass 2: matte cutout at blur element bounds (always full punch-through)
         const mu = new Float32Array(40);
         mu[0] = resW; mu[1] = resH;
         mu[2] = panX; mu[3] = panY;
         mu[4] = zoom;
         mu[5] = (item.rotation || 0) * Math.PI / 180;
         mu[6] = item.radius ?? 2;
-        mu[7] = opacity;
+        mu[7] = 1.0;
         mu[8] = item.x; mu[9] = item.y;
         mu[10] = item.w; mu[11] = item.h;
         mu[12] = item.w + 2; mu[13] = item.h + 2;
         mu[14] = 1; mu[15] = 1;
         draws.push({ uniforms: mu, texBindGroup: this._fallbackTexBG, isMatte: true });
 
-        // Pass 3: blur texture quad (content fill, no shadow)
+        // Pass 3: blur texture quad (always full opacity)
         const bu = new Float32Array(u);
         bu[12] = item.w; bu[13] = item.h;
         bu[14] = 0; bu[15] = 0;
@@ -585,7 +583,18 @@ export class GPURenderer {
         const blurTexBG = this._getTexBindGroup(blurTex.view, this.texCache.linearSampler);
         draws.push({ uniforms: bu, texBindGroup: blurTexBG, isMatte: false });
 
-        // CSS backdrop-filter overlay for live media blurring
+        // Pass 4: colored fill overlay (bgColor at bgOpacity — the only thing opacity controls)
+        const bgColor = this._getBgColor(item);
+        if (bgColor[3] > 0) {
+          const fu = new Float32Array(u);
+          fu[12] = item.w; fu[13] = item.h;
+          fu[14] = 0; fu[15] = 0;
+          fu[33] = 0; fu[34] = 0;
+          fu.set(bgColor, 16);
+          draws.push({ uniforms: fu, texBindGroup: this._fallbackTexBG, isMatte: false });
+        }
+
+        // CSS backdrop-filter overlay for live media blurring (always full opacity)
         const mediaBehind = this._findMediaBehind(item);
         if (mediaBehind.length > 0) {
           this._overlays.push({
@@ -596,12 +605,12 @@ export class GPURenderer {
             rotation: item.rotation || 0,
             radius: item.radius ?? 2,
             z: item.z,
-            opacity,
+            opacity: 1,
             blurRadius: 12,
           });
         }
 
-        // Pass 4: text glyph overlay
+        // Pass 5: text glyph overlay (full opacity)
         if ((item.type === 'text' || item.type === 'link') && editingTextId !== item.id) {
           const entry = this.textRenderer.get(item);
           const textRgba = hexToRgba(item.color || '#C2C0B6');
