@@ -2,7 +2,7 @@
 // Renders: grid background, all content items, selection outlines, connectors.
 
 import {
-  GRID_SHADER, QUAD_SHADER, MATTE_SHADER, LINE_SHADER, CIRCLE_SHADER, BLUR_SHADER,
+  GRID_SHADER, QUAD_SHADER, MATTE_SHADER, LINE_SHADER, CIRCLE_SHADER, BLUR_SHADER, BLIT_SHADER,
   GRID_UNIFORM_SIZE, QUAD_UNIFORM_SIZE, LINE_UNIFORM_SIZE, CIRCLE_UNIFORM_SIZE, BLUR_UNIFORM_SIZE,
 } from './shaders.js';
 import { TextureCache } from './TextureCache.js';
@@ -18,6 +18,8 @@ export const SUPERSAMPLE = 2;
 const MAX_QUAD_DRAWS = 1024;
 const MAX_LINE_DRAWS = 512;
 const MAX_CIRCLE_DRAWS = 1024;
+const MAX_BLUR_ITEMS = 32;
+const BLUR_STEP = 4; // pixel spacing between Gaussian blur taps
 
 export class GPURenderer {
   constructor(canvas, device, context) {
@@ -36,9 +38,8 @@ export class GPURenderer {
     this._align = Math.max(256, device.limits.minUniformBufferOffsetAlignment);
     this._bindGroupCache = new WeakMap(); // GPUTextureView → GPUBindGroup
 
-    // Blur effect: offscreen textures for 1:1 GPU Gaussian blur
-    this._blurTextures = new Map(); // itemId → { texture, view, width, height }
-    this._blurIntermediate = null; // shared ping-pong texture for Gaussian blur passes
+    // Blur effect: world-res textures + intermediates for Gaussian blur (zoom-independent)
+    this._blurTextures = new Map(); // itemId → { texture, view, intTexture, intView, width, height }
 
     this._initPipelines();
     this._initBuffers();
@@ -123,15 +124,24 @@ export class GPURenderer {
       fragment: { module: circleModule, entryPoint: 'fs_main', targets: [{ format, blend: blendAlpha }] },
     });
 
-    // ── Blur (separable Gaussian post-process) ──
-    const blurModule = device.createShaderModule({ code: BLUR_SHADER });
+    // ── Blur + Blit (shared bind group layout: dynamic uniform + texture/sampler) ──
     this._blurBGL0 = device.createBindGroupLayout({
-      entries: [{ binding: 0, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } }],
+      entries: [{ binding: 0, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: 'uniform', hasDynamicOffset: true } }],
     });
+    const blurBlitLayout = device.createPipelineLayout({ bindGroupLayouts: [this._blurBGL0, this._quadBGL1] });
+
+    const blurModule = device.createShaderModule({ code: BLUR_SHADER });
     this.blurPipeline = device.createRenderPipeline({
-      layout: device.createPipelineLayout({ bindGroupLayouts: [this._blurBGL0, this._quadBGL1] }),
+      layout: blurBlitLayout,
       vertex: { module: blurModule, entryPoint: 'vs_main', buffers: [vertexLayout] },
       fragment: { module: blurModule, entryPoint: 'fs_main', targets: [{ format }] },
+    });
+
+    const blitModule = device.createShaderModule({ code: BLIT_SHADER });
+    this.blitPipeline = device.createRenderPipeline({
+      layout: blurBlitLayout,
+      vertex: { module: blitModule, entryPoint: 'vs_main', buffers: [vertexLayout] },
+      fragment: { module: blitModule, entryPoint: 'fs_main', targets: [{ format }] },
     });
   }
 
@@ -161,18 +171,12 @@ export class GPURenderer {
     this.lineBindGroup = device.createBindGroup({ layout: this._lineBGL, entries: [{ binding: 0, resource: { buffer: this.lineUniformBuf, size: LINE_UNIFORM_SIZE } }] });
     this.circleBindGroup = device.createBindGroup({ layout: this._circleBGL, entries: [{ binding: 0, resource: { buffer: this.circleUniformBuf, size: CIRCLE_UNIFORM_SIZE } }] });
 
-    // Blur offscreen: separate uniform buffer so blur passes don't conflict with main render
-    const MAX_BLUR_DRAWS = 256;
-    this._blurQuadUniformBuf = device.createBuffer({ size: A * MAX_BLUR_DRAWS, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
-    this._blurQuadBindGroup = device.createBindGroup({ layout: this._quadBGL0, entries: [{ binding: 0, resource: { buffer: this._blurQuadUniformBuf, size: QUAD_UNIFORM_SIZE } }] });
     // Fallback texture bind group (used when no texture is bound)
     this._fallbackTexBG = this._getTexBindGroup(this.texCache.fallback.view, this.texCache.nearestSampler);
 
-    // Blur Gaussian pass uniform buffers (H and V directions)
-    this._blurHUniformBuf = device.createBuffer({ size: BLUR_UNIFORM_SIZE, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
-    this._blurVUniformBuf = device.createBuffer({ size: BLUR_UNIFORM_SIZE, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
-    this._blurHBindGroup = device.createBindGroup({ layout: this._blurBGL0, entries: [{ binding: 0, resource: { buffer: this._blurHUniformBuf } }] });
-    this._blurVBindGroup = device.createBindGroup({ layout: this._blurBGL0, entries: [{ binding: 0, resource: { buffer: this._blurVUniformBuf } }] });
+    // Blur/blit uniform buffer: packed [blit, H-dir, V-dir] triples for up to MAX_BLUR_ITEMS elements
+    this._blurDirUniformBuf = device.createBuffer({ size: A * MAX_BLUR_ITEMS * 3, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    this._blurDirBindGroup = device.createBindGroup({ layout: this._blurBGL0, entries: [{ binding: 0, resource: { buffer: this._blurDirUniformBuf, size: BLUR_UNIFORM_SIZE } }] });
   }
 
   _createStaticVB(data) {
@@ -214,6 +218,7 @@ export class GPURenderer {
         device: this.device,
         format: this.format,
         alphaMode: 'premultiplied',
+        usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
       });
     }
   }
@@ -244,15 +249,20 @@ export class GPURenderer {
     const resW = cssW * dpr;
     const resH = cssH * dpr;
 
-    // ── Phase 0: Render blur offscreen textures ──
+    // ── Phase 0: Pre-allocate blur textures at world-pixel resolution (zoom-independent) ──
     const sorted = [...items].sort((a, b) => a.z - b.z);
     this._currentSorted = sorted; // available to _findMediaBehind
     const blurItems = sorted.filter(i => i.bgBlur && i.type !== 'connector');
 
-    if (blurItems.length > 0) {
-      this._renderBlurPasses(blurItems, sorted, zoomDpr, bgRgb, bgGrid, globalShadow, editingTextId);
+    const blurMeta = new Map(); // itemId → { blurW, blurH, idx }
+    let blurIdx = 0;
+    for (const item of blurItems) {
+      if (item.w <= 0 || item.h <= 0) continue;
+      const blurW = Math.max(2, Math.ceil(item.w));
+      const blurH = Math.max(2, Math.ceil(item.h));
+      this._getOrCreateBlurTexture(item.id, blurW, blurH);
+      blurMeta.set(item.id, { blurW, blurH, idx: blurIdx++ });
     }
-    // Cleanup blur textures for items no longer blurred
     const activeBlurIds = new Set(blurItems.map(i => i.id));
     this._cleanupBlurTextures(activeBlurIds);
 
@@ -290,7 +300,18 @@ export class GPURenderer {
         if (selSet.has(item.id)) {
           this._collectSelection(item, panDpr, panDprY, zoomDpr, resW, resH, quadDraws);
         }
-        contentDrawOrder.push({ quadStart: qs, quadEnd: quadDraws.length });
+        const drawEntry = { quadStart: qs, quadEnd: quadDraws.length };
+        const bm = blurMeta.get(item.id);
+        if (bm) {
+          drawEntry.isBlur = true;
+          drawEntry.blurItemId = item.id;
+          drawEntry.blurW = bm.blurW;
+          drawEntry.blurH = bm.blurH;
+          drawEntry.blurIdx = bm.idx;
+          drawEntry.screenX = item.x * zoomDpr + panDpr;
+          drawEntry.screenY = item.y * zoomDpr + panDprY;
+        }
+        contentDrawOrder.push(drawEntry);
       }
     }
 
@@ -399,17 +420,41 @@ export class GPURenderer {
       device.queue.writeBuffer(this.circleUniformBuf, 0, new Uint8Array(circleBuf));
     }
 
+    // Blur/blit uniforms: packed [blit, H-dir, V-dir] triples per blur element
+    if (blurIdx > 0) {
+      const blurDirBuf = new ArrayBuffer(A * blurIdx * 3);
+      for (const [itemId, meta] of blurMeta) {
+        const item = blurItems.find(i => i.id === itemId);
+        // Slot 0: blit srcRect (UV coordinates in canvas texture)
+        const blit = new Float32Array(blurDirBuf, A * (meta.idx * 3), 4);
+        blit[0] = (item.x * zoomDpr + panDpr) / canvasW;  // srcOrigin.x
+        blit[1] = (item.y * zoomDpr + panDprY) / canvasH; // srcOrigin.y
+        blit[2] = item.w * zoomDpr / canvasW;              // srcSize.x
+        blit[3] = item.h * zoomDpr / canvasH;              // srcSize.y
+        // Slot 1: H blur direction
+        const hDir = new Float32Array(blurDirBuf, A * (meta.idx * 3 + 1), 4);
+        hDir[0] = BLUR_STEP / meta.blurW;
+        // Slot 2: V blur direction
+        const vDir = new Float32Array(blurDirBuf, A * (meta.idx * 3 + 2), 4);
+        vDir[1] = BLUR_STEP / meta.blurH;
+      }
+      device.queue.writeBuffer(this._blurDirUniformBuf, 0, new Uint8Array(blurDirBuf));
+    }
+
     // ── Phase 3: Build and submit command buffer ──
 
-    let textureView;
+    let canvasTexture;
     try {
-      textureView = this.context.getCurrentTexture().createView();
+      canvasTexture = this.context.getCurrentTexture();
     } catch (e) {
       return; // context lost or canvas zero-size
     }
+    const textureView = canvasTexture.createView();
+    // Canvas bind group for blit sampling (created once per frame, reused across blur elements)
+    const canvasSampleBG = blurIdx > 0 ? this._getTexBindGroup(canvasTexture.createView(), this.texCache.linearSampler) : null;
 
     const encoder = device.createCommandEncoder();
-    const pass = encoder.beginRenderPass({
+    let pass = encoder.beginRenderPass({
       colorAttachments: [{
         view: textureView,
         clearValue: { r: bgRgb[0], g: bgRgb[1], b: bgRgb[2], a: 1 },
@@ -431,10 +476,72 @@ export class GPURenderer {
       }
     }
 
-    // ── Content layer (interleaved by z-order for correct layering) ──
+    // ── Content layer (interleaved by z-order, with render pass splits at blur elements) ──
     {
       let curPipe = null;
       for (const entry of contentDrawOrder) {
+        // ── Blur element: end pass → copy framebuffer → Gaussian blur → resume pass ──
+        if (entry.isBlur) {
+          pass.end();
+
+          const blurTex = this._blurTextures.get(entry.blurItemId);
+          if (blurTex) {
+            // Blit: downsample canvas framebuffer rect into world-res blur texture
+            const blitOff = entry.blurIdx * 3 * A;
+            const blitP = encoder.beginRenderPass({
+              colorAttachments: [{
+                view: blurTex.view,
+                loadOp: 'clear',
+                clearValue: { r: bgRgb[0], g: bgRgb[1], b: bgRgb[2], a: 1 },
+                storeOp: 'store',
+              }],
+            });
+            blitP.setViewport(0, 0, entry.blurW, entry.blurH, 0, 1);
+            blitP.setPipeline(this.blitPipeline);
+            blitP.setBindGroup(0, this._blurDirBindGroup, [blitOff]);
+            blitP.setBindGroup(1, canvasSampleBG);
+            blitP.setVertexBuffer(0, this.quadVertBuf);
+            blitP.draw(6);
+            blitP.end();
+
+            // 4-pass Gaussian blur (H→int, V→tex, H→int, V→tex)
+            const texBgA = this._getTexBindGroup(blurTex.view, this.texCache.linearSampler);
+            const texBgB = this._getTexBindGroup(blurTex.intView, this.texCache.linearSampler);
+            const hOff = blitOff + A;
+            const vOff = blitOff + A * 2;
+
+            const bp = (targetView, srcBg, dirOff) => {
+              const p = encoder.beginRenderPass({
+                colorAttachments: [{ view: targetView, loadOp: 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 0 } }],
+              });
+              p.setViewport(0, 0, entry.blurW, entry.blurH, 0, 1);
+              p.setPipeline(this.blurPipeline);
+              p.setBindGroup(0, this._blurDirBindGroup, [dirOff]);
+              p.setBindGroup(1, srcBg);
+              p.setVertexBuffer(0, this.quadVertBuf);
+              p.draw(6);
+              p.end();
+            };
+
+            bp(blurTex.intView, texBgA, hOff);  // H: tex→int
+            bp(blurTex.view, texBgB, vOff);     // V: int→tex
+            bp(blurTex.intView, texBgA, hOff);  // H: tex→int
+            bp(blurTex.view, texBgB, vOff);     // V: int→tex
+          }
+
+          // Resume render pass on canvas (preserve existing content)
+          pass = encoder.beginRenderPass({
+            colorAttachments: [{
+              view: textureView,
+              loadOp: 'load',
+              storeOp: 'store',
+            }],
+          });
+          pass.setViewport(0, 0, canvasW, canvasH, 0, 1);
+          curPipe = null;
+        }
+
+        // Draw the entry's quads/lines/circles
         if (entry.quadStart !== undefined) {
           pass.setVertexBuffer(0, this.quadVertBuf);
           for (let i = entry.quadStart; i < entry.quadEnd; i++) {
@@ -895,14 +1002,21 @@ export class GPURenderer {
   _getOrCreateBlurTexture(id, width, height) {
     const existing = this._blurTextures.get(id);
     if (existing && existing.width === width && existing.height === height) return existing;
-    if (existing) existing.texture.destroy();
+    if (existing) {
+      existing.texture.destroy();
+      existing.intTexture.destroy();
+    }
     const texture = this.device.createTexture({
       size: [width, height],
       format: this.format,
       usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
     });
-    const view = texture.createView();
-    const entry = { texture, view, width, height };
+    const intTexture = this.device.createTexture({
+      size: [width, height],
+      format: this.format,
+      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+    });
+    const entry = { texture, view: texture.createView(), intTexture, intView: intTexture.createView(), width, height };
     this._blurTextures.set(id, entry);
     return entry;
   }
@@ -911,159 +1025,9 @@ export class GPURenderer {
     for (const [id, entry] of this._blurTextures) {
       if (!activeIds.has(id)) {
         entry.texture.destroy();
+        entry.intTexture.destroy();
         this._blurTextures.delete(id);
       }
-    }
-    if (activeIds.size === 0 && this._blurIntermediate) {
-      this._blurIntermediate.texture.destroy();
-      this._blurIntermediate = null;
-    }
-  }
-
-  _getOrCreateBlurIntermediate(width, height) {
-    const existing = this._blurIntermediate;
-    if (existing && existing.width === width && existing.height === height) return existing;
-    if (existing) existing.texture.destroy();
-    const texture = this.device.createTexture({
-      size: [width, height],
-      format: this.format,
-      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
-    });
-    const view = texture.createView();
-    this._blurIntermediate = { texture, view, width, height };
-    return this._blurIntermediate;
-  }
-
-  /** Render items below each blur element into a 1:1 offscreen texture,
-   *  then apply two-pass separable Gaussian blur (H→V, repeated twice). */
-  _renderBlurPasses(blurItems, sorted, zoomDpr, bgRgb, bgGrid, globalShadow, editingTextId) {
-    const device = this.device;
-    const A = this._align;
-    const BLUR_STEP = 4; // pixel spacing between Gaussian taps
-
-    for (const blurItem of blurItems) {
-      if (blurItem.w <= 0 || blurItem.h <= 0) continue;
-
-      // 1:1 world-pixel resolution blur texture
-      const blurW = Math.max(2, Math.ceil(blurItem.w));
-      const blurH = Math.max(2, Math.ceil(blurItem.h));
-      const texA = this._getOrCreateBlurTexture(blurItem.id, blurW, blurH);
-      const texB = this._getOrCreateBlurIntermediate(blurW, blurH);
-
-      // Offscreen viewport: map blur element's world area to fill texture
-      const offZoom = blurW / blurItem.w;
-      const offPanX = -blurItem.x * offZoom;
-      const offPanY = -blurItem.y * offZoom;
-
-      // Expand intersection bounds for rotated elements
-      const rot = blurItem.rotation || 0;
-      const margin = rot !== 0
-        ? Math.max(blurItem.w, blurItem.h) * Math.abs(Math.sin((rot * Math.PI / 180) * 2)) * 0.5
-        : 0;
-      const bx0 = blurItem.x - margin, by0 = blurItem.y - margin;
-      const bx1 = blurItem.x + blurItem.w + margin, by1 = blurItem.y + blurItem.h + margin;
-
-      // Collect items below the blur element that intersect its bounds.
-      // Media (video/GIF) items get matte cutouts — transparent holes so the
-      // CSS backdrop-filter div can blur live media through the canvas.
-      const draws = [];
-      for (const item of sorted) {
-        if (item.z >= blurItem.z) break;
-        if (item.bgBlur) continue;
-        if (item.type === 'connector') continue;
-        if (item.x + item.w < bx0 || item.x > bx1) continue;
-        if (item.y + item.h < by0 || item.y > by1) continue;
-
-        const isGif = item.type === 'image' && (item.isGif || isGifSrc(item.src));
-        const isMedia = item.type === 'video' || isGif;
-
-        if (isMedia) {
-          const mu = new Float32Array(40);
-          mu[0] = blurW; mu[1] = blurH;
-          mu[2] = offPanX; mu[3] = offPanY;
-          mu[4] = offZoom;
-          mu[5] = (item.rotation || 0) * Math.PI / 180;
-          mu[6] = item.radius ?? 2;
-          mu[7] = 1.0;
-          mu[8] = item.x; mu[9] = item.y;
-          mu[10] = item.w; mu[11] = item.h;
-          mu[12] = item.w + 2; mu[13] = item.h + 2;
-          mu[14] = 1; mu[15] = 1;
-          draws.push({ uniforms: mu, texBindGroup: this._fallbackTexBG, isMatte: true });
-          continue;
-        }
-
-        this._collectItem(item, offPanX, offPanY, offZoom, blurW, blurH, globalShadow, editingTextId, draws);
-      }
-
-      // Write quad uniforms for item draws
-      if (draws.length > 0) {
-        const quadBuf = new ArrayBuffer(A * draws.length);
-        for (let i = 0; i < draws.length; i++) {
-          new Float32Array(quadBuf, A * i, 40).set(draws[i].uniforms);
-        }
-        device.queue.writeBuffer(this._blurQuadUniformBuf, 0, new Uint8Array(quadBuf));
-      }
-
-      // Write blur direction uniforms (both written before encoder, used in different passes)
-      const hDir = new Float32Array(4);
-      hDir[0] = BLUR_STEP / blurW;
-      device.queue.writeBuffer(this._blurHUniformBuf, 0, hDir);
-      const vDir = new Float32Array(4);
-      vDir[1] = BLUR_STEP / blurH;
-      device.queue.writeBuffer(this._blurVUniformBuf, 0, vDir);
-
-      // Texture bind groups for blur source sampling
-      const texBgA = this._getTexBindGroup(texA.view, this.texCache.linearSampler);
-      const texBgB = this._getTexBindGroup(texB.view, this.texCache.linearSampler);
-
-      const encoder = device.createCommandEncoder();
-
-      // ── Pass 1: Render items into texture A ──
-      const p1 = encoder.beginRenderPass({
-        colorAttachments: [{
-          view: texA.view,
-          clearValue: { r: bgRgb[0], g: bgRgb[1], b: bgRgb[2], a: 1 },
-          loadOp: 'clear', storeOp: 'store',
-        }],
-      });
-      p1.setViewport(0, 0, blurW, blurH, 0, 1);
-      if (draws.length > 0) {
-        p1.setVertexBuffer(0, this.quadVertBuf);
-        let curPipe = null;
-        for (let i = 0; i < draws.length; i++) {
-          const draw = draws[i];
-          const pipeline = draw.isMatte ? this.mattePipeline : this.quadPipeline;
-          if (pipeline !== curPipe) { p1.setPipeline(pipeline); curPipe = pipeline; }
-          p1.setBindGroup(0, this._blurQuadBindGroup, [A * i]);
-          p1.setBindGroup(1, draw.texBindGroup);
-          p1.draw(6);
-        }
-      }
-      p1.end();
-
-      // ── Gaussian blur: 2 iterations of H→V for strong frosted-glass effect ──
-      const blurPass = (target, srcBg, dirBg) => {
-        const p = encoder.beginRenderPass({
-          colorAttachments: [{ view: target, loadOp: 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 0 } }],
-        });
-        p.setViewport(0, 0, blurW, blurH, 0, 1);
-        p.setPipeline(this.blurPipeline);
-        p.setBindGroup(0, dirBg);
-        p.setBindGroup(1, srcBg);
-        p.setVertexBuffer(0, this.quadVertBuf);
-        p.draw(6);
-        p.end();
-      };
-
-      // Iteration 1: H-blur A→B, V-blur B→A
-      blurPass(texB.view, texBgA, this._blurHBindGroup);
-      blurPass(texA.view, texBgB, this._blurVBindGroup);
-      // Iteration 2: H-blur A→B, V-blur B→A
-      blurPass(texB.view, texBgA, this._blurHBindGroup);
-      blurPass(texA.view, texBgB, this._blurVBindGroup);
-
-      device.queue.submit([encoder.finish()]);
     }
   }
 
@@ -1262,11 +1226,10 @@ export class GPURenderer {
     this.texCache.destroy();
     this.textRenderer.destroy();
     this.pillRenderer.destroy();
-    for (const entry of this._blurTextures.values()) entry.texture.destroy();
-    this._blurTextures.clear();
-    if (this._blurIntermediate) {
-      this._blurIntermediate.texture.destroy();
-      this._blurIntermediate = null;
+    for (const entry of this._blurTextures.values()) {
+      entry.texture.destroy();
+      entry.intTexture.destroy();
     }
+    this._blurTextures.clear();
   }
 }
