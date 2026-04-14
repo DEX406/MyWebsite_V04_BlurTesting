@@ -144,7 +144,7 @@ export default function App() {
       const screenY = o.y * zoom + panY;
       const screenW = o.w * zoom;
       const screenH = o.h * zoom;
-      const ss = SUPERSAMPLE;
+      const ss = 1;
       const invSS = 1 / ss;
       el.style.left = (screenX - screenW * (ss - 1) * 0.5) + 'px';
       el.style.top = (screenY - screenH * (ss - 1) * 0.5) + 'px';
