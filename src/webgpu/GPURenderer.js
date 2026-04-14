@@ -19,7 +19,7 @@ const MAX_QUAD_DRAWS = 1024;
 const MAX_LINE_DRAWS = 512;
 const MAX_CIRCLE_DRAWS = 1024;
 const MAX_BLUR_ITEMS = 32;
-const BLUR_STEP = 4; // pixel spacing between Gaussian blur taps
+const BLUR_STEP = 1; // pixel spacing between Gaussian blur taps
 
 export class GPURenderer {
   constructor(canvas, device, context) {
