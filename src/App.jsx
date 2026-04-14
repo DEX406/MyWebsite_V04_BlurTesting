@@ -197,18 +197,25 @@ export default function App() {
       const bScreenY = o.y * zoom + panY;
       const bScreenW = o.w * zoom;
       const bScreenH = o.h * zoom;
+      // Keep backdrop-filter sampling at canvas/world resolution so zoom only
+      // scales the already-sampled blur, instead of increasing sample density.
+      const sampleW = o.w * bss;
+      const sampleH = o.h * bss;
+      const centerX = bScreenX + bScreenW * 0.5;
+      const centerY = bScreenY + bScreenH * 0.5;
 
-      el.style.left = (bScreenX - bScreenW * (bss - 1) * 0.5) + 'px';
-      el.style.top = (bScreenY - bScreenH * (bss - 1) * 0.5) + 'px';
-      el.style.width = (bScreenW * bss) + 'px';
-      el.style.height = (bScreenH * bss) + 'px';
+      el.style.left = (centerX - sampleW * 0.5) + 'px';
+      el.style.top = (centerY - sampleH * 0.5) + 'px';
+      el.style.width = sampleW + 'px';
+      el.style.height = sampleH + 'px';
       el.style.zIndex = o.z;
-      el.style.borderRadius = (o.radius * zoom * bss) + 'px';
+      el.style.borderRadius = (o.radius * bss) + 'px';
       const bRot = o.rotation ? ` rotate(${o.rotation}deg)` : '';
-      el.style.transform = `scale(${bInvSS})${bRot}`;
+      el.style.transform = `scale(${(zoom * bInvSS)})${bRot}`;
 
-      // CSS blur radius scaled to match GPU Gaussian blur appearance
-      const blurPx = (o.blurRadius || 12) * zoom * bss;
+      // Blur radius in canvas/world pixels; zoom scales the final result via
+      // element transform, keeping sampling density zoom-independent.
+      const blurPx = (o.blurRadius || 12) * bss;
       el.style.backdropFilter = `blur(${blurPx}px)`;
       el.style.webkitBackdropFilter = `blur(${blurPx}px)`;
     }
