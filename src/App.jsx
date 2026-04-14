@@ -192,9 +192,33 @@ export default function App() {
     const blurRadius = blurVideoOverlays[0]?.blurRadius || 12;
     const blurPx = blurRadius * SUPERSAMPLE * Math.max(0.1, GLASS_DOWNSAMPLE);
     const topZ = blurVideoOverlays.reduce((m, o) => Math.max(m, o.z || 0), 0);
+    const clipPathD = blurVideoOverlays.map((o) => {
+      const cx = o.x * zoom + panX + (o.w * zoom * 0.5);
+      const cy = o.y * zoom + panY + (o.h * zoom * 0.5);
+      const hw = (o.w * zoom) * 0.5;
+      const hh = (o.h * zoom) * 0.5;
+      const rad = (o.rotation || 0) * Math.PI / 180;
+      const cos = Math.cos(rad);
+      const sin = Math.sin(rad);
+      const corners = [
+        [-hw, -hh],
+        [hw, -hh],
+        [hw, hh],
+        [-hw, hh],
+      ].map(([dx, dy]) => {
+        const x = cx + (dx * cos - dy * sin);
+        const y = cy + (dx * sin + dy * cos);
+        return `${x.toFixed(2)} ${y.toFixed(2)}`;
+      });
+      return `M ${corners[0]} L ${corners[1]} L ${corners[2]} L ${corners[3]} Z`;
+    }).join(' ');
+
     sharedEl.style.zIndex = String(topZ);
     sharedEl.style.backdropFilter = `blur(${blurPx}px)`;
     sharedEl.style.webkitBackdropFilter = `blur(${blurPx}px)`;
+    const pathValue = `path('${clipPathD}')`;
+    sharedEl.style.clipPath = pathValue;
+    sharedEl.style.webkitClipPath = pathValue;
     sharedEl.style.display = 'block';
   }, []);
 
