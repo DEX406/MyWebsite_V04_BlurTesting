@@ -426,12 +426,15 @@ export class GPURenderer {
       const blurDirBuf = new ArrayBuffer(A * blurIdx * 3);
       for (const [itemId, meta] of blurMeta) {
         const item = blurItems.find(i => i.id === itemId);
-        // Slot 0: blit srcRect (UV coordinates in canvas texture)
-        const blit = new Float32Array(blurDirBuf, A * (meta.idx * 3), 4);
+        // Slot 0: blit srcRect + item rotation (UV coordinates in canvas texture)
+        const blit = new Float32Array(blurDirBuf, A * (meta.idx * 3), 8);
         blit[0] = (item.x * zoomDpr + panDpr) / canvasW;  // srcOrigin.x
         blit[1] = (item.y * zoomDpr + panDprY) / canvasH; // srcOrigin.y
         blit[2] = item.w * zoomDpr / canvasW;              // srcSize.x
         blit[3] = item.h * zoomDpr / canvasH;              // srcSize.y
+        const rot = (item.rotation || 0) * Math.PI / 180;
+        blit[4] = Math.cos(rot);                            // rotCos
+        blit[5] = Math.sin(rot);                            // rotSin
         // Slot 1: H blur direction
         const hDir = new Float32Array(blurDirBuf, A * (meta.idx * 3 + 1), 4);
         hDir[0] = (BLUR_STEP * GLASS_DOWNSAMPLE) / meta.blurW;

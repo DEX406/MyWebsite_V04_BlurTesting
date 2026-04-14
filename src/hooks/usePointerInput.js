@@ -10,6 +10,7 @@ export function usePointerInput({
   rotatingRef, setRotating,
   editingConnectorRef, setEditingConnector,
   setEditingTextId,
+  editingTextIdRef,
   effectiveSnapRef,
   scheduleSave, animateTo, pushUndo,
   doHitTest,
@@ -96,6 +97,7 @@ export function usePointerInput({
       }
 
       if (!action) {
+        if (editingTextIdRef.current && editingTextIdRef.current !== id) setEditingTextId(null);
         const alreadySelected = selectedIds.includes(id);
         const dragIds = alreadySelected
           ? selectedIds
@@ -186,7 +188,12 @@ export function usePointerInput({
       const dx = (e.clientX - rsz.startX) / zoomRef.current;
       const dy = (e.clientY - rsz.startY) / zoomRef.current;
       const r = computeResize(rsz.item, rsz.handle, dx, dy, es);
-      itemOverrideRef.current = { id: rsz.id, props: { x: r.x, y: r.y, w: r.w, h: r.h } };
+      const props = { x: r.x, y: r.y, w: r.w, h: r.h };
+      itemOverrideRef.current = { id: rsz.id, props };
+      const resizeItem = itemsRef.current.find(i => i.id === rsz.id);
+      if (resizeItem && (resizeItem.type === 'text' || resizeItem.type === 'link') && editingTextIdRef.current === rsz.id) {
+        setItems(p => p.map(i => i.id === rsz.id ? { ...i, ...props } : i));
+      }
       if (drawBgRef.current) drawBgRef.current();
     } else if (rot) {
       const mouseAngle = Math.atan2(e.clientY - rot.centerY, e.clientX - rot.centerX) * 180 / Math.PI;
@@ -199,7 +206,7 @@ export function usePointerInput({
       applyTransform();
       updateDisplays();
     }
-  }, [applyTransform, updateDisplays]);
+  }, [applyTransform, updateDisplays, setItems, setEditingTextId]);
 
   const handlePointerUp = useCallback((e) => {
     if (e?.pointerType === "touch") return;

@@ -90,9 +90,8 @@ export default function App() {
   // ── Media overlay (DOM elements behind canvas for videos/GIFs) ──
   const overlayRef = useRef(null);
   const overlayElsRef = useRef(new Map()); // id → DOM element
-  // ── Blur overlay (single shared CSS backdrop-filter div behind canvas) ──
-  const sharedBlurElRef = useRef(null); // one DOM div to avoid blur stacking
-  const sharedBlurClipRef = useRef(null); // { svg, clipPath, id }
+  // ── Blur overlays for live media (DOM backdrop-filter layers) ──
+  const blurOverlayElsRef = useRef(new Map()); // id → DOM element
 
   const syncOverlays = useCallback((overlays, panX, panY, zoom) => {
     const container = overlayRef.current;
@@ -157,96 +156,50 @@ export default function App() {
       el.style.transformOrigin = 'center center';
     }
 
-    // ── Shared blur backdrop overlay ──
-    // We use one full-size backdrop-filter layer instead of one per blur item,
-    // so overlapping blur windows do not stack additional blur strength.
-    const blurCount = blurVideoOverlays.length;
-    let sharedEl = sharedBlurElRef.current;
-
-    if (!blurCount) {
-      if (sharedEl) {
-        if (sharedEl._blurRaf) cancelAnimationFrame(sharedEl._blurRaf);
-        sharedEl.remove();
-        sharedBlurElRef.current = null;
+    // ── Per-item blur overlays (for live media behind blur items) ──
+    const activeBlurIds = new Set(blurVideoOverlays.map(o => o.id));
+    for (const [id, el] of blurOverlayElsRef.current) {
+      if (!activeBlurIds.has(id)) {
+        if (el._blurRaf) cancelAnimationFrame(el._blurRaf);
+        el.remove();
+        blurOverlayElsRef.current.delete(id);
       }
-      const clip = sharedBlurClipRef.current;
-      if (clip) {
-        clip.svg.remove();
-        sharedBlurClipRef.current = null;
-      }
-      return;
     }
 
-    if (!sharedEl) {
-      sharedEl = document.createElement('div');
-      sharedEl.style.cssText = 'position:absolute;top:0;left:0;right:0;bottom:0;pointer-events:none;';
-      container.appendChild(sharedEl);
-      sharedBlurElRef.current = sharedEl;
-      // rAF loop forces browser to re-composite backdrop-filter every frame,
-      // keeping the blur live over animated GIFs and videos.
-      let tick = false;
-      const repaint = () => {
-        sharedEl.style.opacity = tick ? '1' : '0.999';
-        tick = !tick;
-        sharedEl._blurRaf = requestAnimationFrame(repaint);
-      };
-      sharedEl._blurRaf = requestAnimationFrame(repaint);
-    }
-
-    let clip = sharedBlurClipRef.current;
-    if (!clip) {
-      const ns = 'http://www.w3.org/2000/svg';
-      const svg = document.createElementNS(ns, 'svg');
-      svg.setAttribute('width', '0');
-      svg.setAttribute('height', '0');
-      svg.style.position = 'absolute';
-      svg.style.pointerEvents = 'none';
-      const defs = document.createElementNS(ns, 'defs');
-      const clipPath = document.createElementNS(ns, 'clipPath');
-      const clipId = 'shared-blur-clip-path';
-      clipPath.setAttribute('id', clipId);
-      clipPath.setAttribute('clipPathUnits', 'userSpaceOnUse');
-      defs.appendChild(clipPath);
-      svg.appendChild(defs);
-      container.appendChild(svg);
-      clip = { svg, clipPath, id: clipId };
-      sharedBlurClipRef.current = clip;
-    }
-
-    // Shared blur intensity for the single blur layer.
-    // The canvas matte cutouts determine where this shared layer is visible.
-    const blurRadius = blurVideoOverlays[0]?.blurRadius || 12;
-    // Keep blur radius in canvas/world units so visual blur scales with zoom.
-    const blurPx = blurRadius * zoom * SUPERSAMPLE * Math.max(0.1, GLASS_DOWNSAMPLE);
-    const topZ = blurVideoOverlays.reduce((m, o) => Math.max(m, o.z || 0), 0);
-    while (clip.clipPath.firstChild) clip.clipPath.removeChild(clip.clipPath.firstChild);
     for (const o of blurVideoOverlays) {
-      const ns = 'http://www.w3.org/2000/svg';
-      const rect = document.createElementNS(ns, 'rect');
-      const x = o.x * zoom + panX;
-      const y = o.y * zoom + panY;
-      const w = o.w * zoom;
-      const h = o.h * zoom;
-      const cx = x + w * 0.5;
-      const cy = y + h * 0.5;
-      const r = Math.max(0, Math.min(o.radius * zoom, w * 0.5, h * 0.5));
-      rect.setAttribute('x', String(x));
-      rect.setAttribute('y', String(y));
-      rect.setAttribute('width', String(w));
-      rect.setAttribute('height', String(h));
-      rect.setAttribute('rx', String(r));
-      rect.setAttribute('ry', String(r));
-      if (o.rotation) rect.setAttribute('transform', `rotate(${o.rotation} ${cx} ${cy})`);
-      clip.clipPath.appendChild(rect);
-    }
+      let blurEl = blurOverlayElsRef.current.get(o.id);
+      if (!blurEl) {
+        blurEl = document.createElement('div');
+        blurEl.style.cssText = 'position:absolute;pointer-events:none;transform-origin:center center;';
+        container.appendChild(blurEl);
+        blurOverlayElsRef.current.set(o.id, blurEl);
+        let tick = false;
+        const repaint = () => {
+          blurEl.style.opacity = tick ? '1' : '0.999';
+          tick = !tick;
+          blurEl._blurRaf = requestAnimationFrame(repaint);
+        };
+        blurEl._blurRaf = requestAnimationFrame(repaint);
+      }
 
-    sharedEl.style.zIndex = String(topZ);
-    sharedEl.style.backdropFilter = `blur(${blurPx}px)`;
-    sharedEl.style.webkitBackdropFilter = `blur(${blurPx}px)`;
-    const clipUrl = `url(#${clip.id})`;
-    sharedEl.style.clipPath = clipUrl;
-    sharedEl.style.webkitClipPath = clipUrl;
-    sharedEl.style.display = 'block';
+      const screenX = o.x * zoom + panX;
+      const screenY = o.y * zoom + panY;
+      const screenW = o.w * zoom;
+      const screenH = o.h * zoom;
+      const radius = Math.max(0, Math.min((o.radius ?? 0) * zoom, screenW * 0.5, screenH * 0.5));
+      const blurPx = (o.blurRadius || 12) * zoom * SUPERSAMPLE * Math.max(0.1, GLASS_DOWNSAMPLE);
+      const rot = o.rotation ? ` rotate(${o.rotation}deg)` : '';
+      blurEl.style.left = `${screenX}px`;
+      blurEl.style.top = `${screenY}px`;
+      blurEl.style.width = `${screenW}px`;
+      blurEl.style.height = `${screenH}px`;
+      blurEl.style.borderRadius = `${radius}px`;
+      blurEl.style.zIndex = String(o.z || 0);
+      blurEl.style.transform = rot;
+      blurEl.style.backdropFilter = `blur(${blurPx}px)`;
+      blurEl.style.webkitBackdropFilter = `blur(${blurPx}px)`;
+      blurEl.style.display = 'block';
+    }
   }, []);
 
   // Cleanup overlay elements on unmount
@@ -257,19 +210,17 @@ export default function App() {
         el.remove();
       }
       overlayElsRef.current.clear();
-      const sharedEl = sharedBlurElRef.current;
-      if (sharedEl) {
-        if (sharedEl._blurRaf) cancelAnimationFrame(sharedEl._blurRaf);
-        sharedEl.remove();
-        sharedBlurElRef.current = null;
+      for (const blurEl of blurOverlayElsRef.current.values()) {
+        if (blurEl._blurRaf) cancelAnimationFrame(blurEl._blurRaf);
+        blurEl.remove();
       }
-      const clip = sharedBlurClipRef.current;
-      if (clip) {
-        clip.svg.remove();
-        sharedBlurClipRef.current = null;
-      }
+      blurOverlayElsRef.current.clear();
     };
   }, []);
+
+  useEffect(() => {
+    if (editingTextId && !selectedIds.includes(editingTextId)) setEditingTextId(null);
+  }, [editingTextId, selectedIds]);
 
   // Wire up WebGL render trigger — called on every viewport change (pan/zoom/resize)
   useEffect(() => {
@@ -456,7 +407,7 @@ export default function App() {
     vp, items, setItems, selectedIds, setSelectedIds, isAdmin,
     draggingRef, setDragging, resizingRef, setResizing,
     rotatingRef, setRotating, editingConnectorRef, setEditingConnector,
-    setEditingTextId, effectiveSnapRef, scheduleSave, animateTo, pushUndo,
+    setEditingTextId, editingTextIdRef, effectiveSnapRef, scheduleSave, animateTo, pushUndo,
     doHitTest: webgl.doHitTest, setBoxSelect, dragDeltaRef, itemOverrideRef,
   });
 
