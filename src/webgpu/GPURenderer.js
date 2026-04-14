@@ -219,7 +219,7 @@ export class GPURenderer {
         device: this.device,
         format: this.format,
         alphaMode: 'premultiplied',
-        usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
+        usage: GPUTextureUsage.RENDER_ATTACHMENT,
       });
     }
   }
@@ -446,7 +446,117 @@ export class GPURenderer {
     const textureView = canvasTexture.createView();
 
     const encoder = device.createCommandEncoder();
-    let pass = encoder.beginRenderPass({
+
+    // ── Helpers for drawing grid + content into any render pass ──
+    const drawGrid = (p) => {
+      if (bgGrid.enabled) {
+        const fade = zoom >= 1 ? 1 : zoom <= 0.5 ? 0 : (zoom - 0.5) / 0.5;
+        if (fade > 0) {
+          p.setPipeline(this.gridPipeline);
+          p.setBindGroup(0, this.gridBindGroup);
+          p.setVertexBuffer(0, this.gridVertBuf);
+          p.draw(6);
+        }
+      }
+    };
+
+    const drawEntries = (p, startIdx, endIdx) => {
+      let curPipe = null;
+      for (let ei = startIdx; ei < endIdx; ei++) {
+        const entry = contentDrawOrder[ei];
+        if (entry.quadStart !== undefined) {
+          p.setVertexBuffer(0, this.quadVertBuf);
+          for (let i = entry.quadStart; i < entry.quadEnd; i++) {
+            const draw = allQuads[i];
+            const pipeline = draw.isMatte ? this.mattePipeline : this.quadPipeline;
+            if (pipeline !== curPipe) { p.setPipeline(pipeline); curPipe = pipeline; }
+            p.setBindGroup(0, this.quadBindGroup, [A * i]);
+            p.setBindGroup(1, draw.texBindGroup);
+            p.draw(6);
+          }
+        } else {
+          if (entry.lineStart < entry.lineEnd) {
+            if (curPipe !== this.linePipeline) { p.setPipeline(this.linePipeline); curPipe = this.linePipeline; }
+            p.setVertexBuffer(0, this.lineVertBuf);
+            for (let i = entry.lineStart; i < entry.lineEnd; i++) {
+              p.setBindGroup(0, this.lineBindGroup, [A * i]);
+              p.draw(allLines[i]._vertCount, 1, allLines[i]._vertOffset, 0);
+            }
+          }
+          if (entry.circleStart < entry.circleEnd) {
+            if (curPipe !== this.circlePipeline) { p.setPipeline(this.circlePipeline); curPipe = this.circlePipeline; }
+            p.setVertexBuffer(0, this.quadVertBuf);
+            for (let i = entry.circleStart; i < entry.circleEnd; i++) {
+              p.setBindGroup(0, this.circleBindGroup, [A * i]);
+              p.draw(6);
+            }
+          }
+        }
+      }
+    };
+
+    // ── Pre-compute blur textures in offscreen pass (before touching canvas) ──
+    if (blurIdx > 0 && firstBlurEntryIdx >= 0) {
+      this._getOrCreateSnapshot(canvasW, canvasH);
+
+      // Render grid + below-blur content into offscreen background texture
+      const bgPass = encoder.beginRenderPass({
+        colorAttachments: [{
+          view: this._blurSnapshotView,
+          clearValue: { r: bgRgb[0], g: bgRgb[1], b: bgRgb[2], a: 1 },
+          loadOp: 'clear', storeOp: 'store',
+        }],
+      });
+      bgPass.setViewport(0, 0, canvasW, canvasH, 0, 1);
+      drawGrid(bgPass);
+      drawEntries(bgPass, 0, firstBlurEntryIdx);
+      bgPass.end();
+
+      // Blit + Gaussian blur for each blur element
+      const snapshotBG = this._getTexBindGroup(this._blurSnapshotView, this.texCache.linearSampler);
+      for (const [itemId, meta] of blurMeta) {
+        const blurTex = this._blurTextures.get(itemId);
+        if (!blurTex) continue;
+        const blitOff = meta.idx * 3 * A;
+
+        const blitP = encoder.beginRenderPass({
+          colorAttachments: [{ view: blurTex.view, loadOp: 'clear', clearValue: { r: bgRgb[0], g: bgRgb[1], b: bgRgb[2], a: 1 }, storeOp: 'store' }],
+        });
+        blitP.setViewport(0, 0, meta.blurW, meta.blurH, 0, 1);
+        blitP.setPipeline(this.blitPipeline);
+        blitP.setBindGroup(0, this._blurDirBindGroup, [blitOff]);
+        blitP.setBindGroup(1, snapshotBG);
+        blitP.setVertexBuffer(0, this.quadVertBuf);
+        blitP.draw(6);
+        blitP.end();
+
+        const texBgA = this._getTexBindGroup(blurTex.view, this.texCache.linearSampler);
+        const texBgB = this._getTexBindGroup(blurTex.intView, this.texCache.linearSampler);
+        const hOff = blitOff + A;
+        const vOff = blitOff + A * 2;
+
+        const bp = (targetView, srcBg, dirOff) => {
+          const p = encoder.beginRenderPass({
+            colorAttachments: [{ view: targetView, loadOp: 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 0 } }],
+          });
+          p.setViewport(0, 0, meta.blurW, meta.blurH, 0, 1);
+          p.setPipeline(this.blurPipeline);
+          p.setBindGroup(0, this._blurDirBindGroup, [dirOff]);
+          p.setBindGroup(1, srcBg);
+          p.setVertexBuffer(0, this.quadVertBuf);
+          p.draw(6);
+          p.end();
+        };
+
+        bp(blurTex.intView, texBgA, hOff);  // H: tex→int
+        bp(blurTex.view, texBgB, vOff);     // V: int→tex
+        bp(blurTex.intView, texBgA, hOff);  // H: tex→int
+        bp(blurTex.view, texBgB, vOff);     // V: int→tex
+      }
+    }
+
+    // ── Single canvas render pass (zero loadOp:'load' — canvas never splits) ──
+    const pass = encoder.beginRenderPass({
       colorAttachments: [{
         view: textureView,
         clearValue: { r: bgRgb[0], g: bgRgb[1], b: bgRgb[2], a: 1 },
@@ -454,126 +564,9 @@ export class GPURenderer {
         storeOp: 'store',
       }],
     });
-
     pass.setViewport(0, 0, canvasW, canvasH, 0, 1);
-
-    // Grid
-    if (bgGrid.enabled) {
-      const fade = zoom >= 1 ? 1 : zoom <= 0.5 ? 0 : (zoom - 0.5) / 0.5;
-      if (fade > 0) {
-        pass.setPipeline(this.gridPipeline);
-        pass.setBindGroup(0, this.gridBindGroup);
-        pass.setVertexBuffer(0, this.gridVertBuf);
-        pass.draw(6);
-      }
-    }
-
-    // ── Content layer (single split before first blur element) ──
-    {
-      let curPipe = null;
-
-      const drawEntry = (entry) => {
-        if (entry.quadStart !== undefined) {
-          pass.setVertexBuffer(0, this.quadVertBuf);
-          for (let i = entry.quadStart; i < entry.quadEnd; i++) {
-            const draw = allQuads[i];
-            const pipeline = draw.isMatte ? this.mattePipeline : this.quadPipeline;
-            if (pipeline !== curPipe) { pass.setPipeline(pipeline); curPipe = pipeline; }
-            pass.setBindGroup(0, this.quadBindGroup, [A * i]);
-            pass.setBindGroup(1, draw.texBindGroup);
-            pass.draw(6);
-          }
-        } else {
-          if (entry.lineStart < entry.lineEnd) {
-            if (curPipe !== this.linePipeline) { pass.setPipeline(this.linePipeline); curPipe = this.linePipeline; }
-            pass.setVertexBuffer(0, this.lineVertBuf);
-            for (let i = entry.lineStart; i < entry.lineEnd; i++) {
-              pass.setBindGroup(0, this.lineBindGroup, [A * i]);
-              pass.draw(allLines[i]._vertCount, 1, allLines[i]._vertOffset, 0);
-            }
-          }
-          if (entry.circleStart < entry.circleEnd) {
-            if (curPipe !== this.circlePipeline) { pass.setPipeline(this.circlePipeline); curPipe = this.circlePipeline; }
-            pass.setVertexBuffer(0, this.quadVertBuf);
-            for (let i = entry.circleStart; i < entry.circleEnd; i++) {
-              pass.setBindGroup(0, this.circleBindGroup, [A * i]);
-              pass.draw(6);
-            }
-          }
-        }
-      };
-
-      // Where to split: right before the first blur element (or end if none)
-      const splitIdx = (blurIdx > 0 && firstBlurEntryIdx >= 0) ? firstBlurEntryIdx : contentDrawOrder.length;
-
-      // Draw content below first blur element
-      for (let ei = 0; ei < splitIdx; ei++) drawEntry(contentDrawOrder[ei]);
-
-      // Snapshot canvas → compute blur textures → resume
-      if (blurIdx > 0 && firstBlurEntryIdx >= 0) {
-        pass.end();
-
-        this._getOrCreateSnapshot(canvasW, canvasH);
-        encoder.copyTextureToTexture(
-          { texture: canvasTexture },
-          { texture: this._blurSnapshot },
-          [canvasW, canvasH],
-        );
-        const snapshotBG = this._getTexBindGroup(this._blurSnapshotView, this.texCache.linearSampler);
-
-        for (const [itemId, meta] of blurMeta) {
-          const blurTex = this._blurTextures.get(itemId);
-          if (!blurTex) continue;
-          const blitOff = meta.idx * 3 * A;
-
-          // Blit: downsample snapshot rect into world-res blur texture
-          const blitP = encoder.beginRenderPass({
-            colorAttachments: [{ view: blurTex.view, loadOp: 'clear', clearValue: { r: bgRgb[0], g: bgRgb[1], b: bgRgb[2], a: 1 }, storeOp: 'store' }],
-          });
-          blitP.setViewport(0, 0, meta.blurW, meta.blurH, 0, 1);
-          blitP.setPipeline(this.blitPipeline);
-          blitP.setBindGroup(0, this._blurDirBindGroup, [blitOff]);
-          blitP.setBindGroup(1, snapshotBG);
-          blitP.setVertexBuffer(0, this.quadVertBuf);
-          blitP.draw(6);
-          blitP.end();
-
-          // 4-pass Gaussian blur (H→int, V→tex, H→int, V→tex)
-          const texBgA = this._getTexBindGroup(blurTex.view, this.texCache.linearSampler);
-          const texBgB = this._getTexBindGroup(blurTex.intView, this.texCache.linearSampler);
-          const hOff = blitOff + A;
-          const vOff = blitOff + A * 2;
-
-          const bp = (targetView, srcBg, dirOff) => {
-            const p = encoder.beginRenderPass({
-              colorAttachments: [{ view: targetView, loadOp: 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 0 } }],
-            });
-            p.setViewport(0, 0, meta.blurW, meta.blurH, 0, 1);
-            p.setPipeline(this.blurPipeline);
-            p.setBindGroup(0, this._blurDirBindGroup, [dirOff]);
-            p.setBindGroup(1, srcBg);
-            p.setVertexBuffer(0, this.quadVertBuf);
-            p.draw(6);
-            p.end();
-          };
-
-          bp(blurTex.intView, texBgA, hOff);  // H: tex→int
-          bp(blurTex.view, texBgB, vOff);     // V: int→tex
-          bp(blurTex.intView, texBgA, hOff);  // H: tex→int
-          bp(blurTex.view, texBgB, vOff);     // V: int→tex
-        }
-
-        // Resume canvas pass (single loadOp:'load' — not per-element)
-        pass = encoder.beginRenderPass({
-          colorAttachments: [{ view: textureView, loadOp: 'load', storeOp: 'store' }],
-        });
-        pass.setViewport(0, 0, canvasW, canvasH, 0, 1);
-        curPipe = null;
-      }
-
-      // Draw remaining content (blur elements and items above)
-      for (let ei = splitIdx; ei < contentDrawOrder.length; ei++) drawEntry(contentDrawOrder[ei]);
-    }
+    drawGrid(pass);
+    drawEntries(pass, 0, contentDrawOrder.length);
 
     // ── Overlay layer (handles, pills, group box — rendered on top of content) ──
 
@@ -1045,7 +1038,7 @@ export class GPURenderer {
     this._blurSnapshot = this.device.createTexture({
       size: [width, height],
       format: this.format,
-      usage: GPUTextureUsage.COPY_DST | GPUTextureUsage.TEXTURE_BINDING,
+      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
     });
     this._blurSnapshotView = this._blurSnapshot.createView();
     this._blurSnapshotW = width;
