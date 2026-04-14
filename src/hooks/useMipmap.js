@@ -22,8 +22,12 @@ export function useMipmap(items, updateItem, vp) {
 
   // Wire up the settled callback from useViewport
   useEffect(() => {
-    vp.onSettledRef.current = () => setSettled(c => c + 1);
-    return () => { vp.onSettledRef.current = null; };
+    const prev = vp.onSettledRef.current;
+    vp.onSettledRef.current = () => {
+      if (typeof prev === 'function') prev();
+      setSettled(c => c + 1);
+    };
+    return () => { vp.onSettledRef.current = prev || null; };
   }, [vp.onSettledRef]);
 
   // Trigger mipmap generation for images missing variants

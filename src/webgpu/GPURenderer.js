@@ -226,7 +226,7 @@ export class GPURenderer {
 
   // ── Main render ────────────────────────────────────────────────────────────
 
-  render({ items, panX, panY, zoom, bgGrid, globalShadow, selectedIds, editingTextId }) {
+  render({ items, panX, panY, zoom, bgGrid, globalShadow, selectedIds, editingTextId, refreshGpuBlur = true }) {
     this._overlays = []; // media overlay data for DOM positioning
     const device = this.device;
     const dpr = (window.devicePixelRatio || 1) * SUPERSAMPLE;
@@ -452,7 +452,7 @@ export class GPURenderer {
     }
     const textureView = canvasTexture.createView();
     // Canvas bind group for blit sampling (created once per frame, reused across blur elements)
-    const canvasSampleBG = blurIdx > 0 ? this._getTexBindGroup(canvasTexture.createView(), this.texCache.linearSampler) : null;
+    const canvasSampleBG = (blurIdx > 0 && refreshGpuBlur) ? this._getTexBindGroup(canvasTexture.createView(), this.texCache.linearSampler) : null;
 
     const encoder = device.createCommandEncoder();
     let pass = encoder.beginRenderPass({
@@ -482,7 +482,7 @@ export class GPURenderer {
       let curPipe = null;
       for (const entry of contentDrawOrder) {
         // ── Blur element: end pass → copy framebuffer → Gaussian blur → resume pass ──
-        if (entry.isBlur) {
+        if (entry.isBlur && refreshGpuBlur) {
           pass.end();
 
           const blurTex = this._blurTextures.get(entry.blurItemId);
