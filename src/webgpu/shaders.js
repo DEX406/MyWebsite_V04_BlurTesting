@@ -389,6 +389,43 @@ fn fs_main(in: CircleVsOutput) -> @location(0) vec4<f32> {
 }
 `;
 
+// ── Blit shader ──────────────────────────────────────────────────────────────
+// Copies a sub-rect from a source texture into the full render target.
+// Used to downsample a screen-space framebuffer region into a world-res blur texture.
+// Uniform layout (16 bytes / 4 floats):
+//   [0] srcOrigin.x  [1] srcOrigin.y  [2] srcSize.x  [3] srcSize.y
+
+export const BLIT_SHADER = `
+struct BlitUniforms {
+  srcOrigin: vec2<f32>,  // UV origin in source texture
+  srcSize:   vec2<f32>,  // UV extent in source texture
+};
+
+struct BlitVsOutput {
+  @builtin(position) pos: vec4<f32>,
+  @location(0) uv: vec2<f32>,
+};
+
+@group(0) @binding(0) var<uniform> u: BlitUniforms;
+@group(1) @binding(0) var t_src: texture_2d<f32>;
+@group(1) @binding(1) var s_src: sampler;
+
+@vertex
+fn vs_main(@location(0) a_pos: vec2<f32>) -> BlitVsOutput {
+  var out: BlitVsOutput;
+  out.uv = u.srcOrigin + a_pos * u.srcSize;
+  var ndc = a_pos * 2.0 - 1.0;
+  ndc.y = -ndc.y;
+  out.pos = vec4<f32>(ndc, 0.0, 1.0);
+  return out;
+}
+
+@fragment
+fn fs_main(in: BlitVsOutput) -> @location(0) vec4<f32> {
+  return textureSample(t_src, s_src, in.uv);
+}
+`;
+
 // ── Gaussian blur shader ──────────────────────────────────────────────────────
 // Fullscreen-quad 13-tap separable Gaussian blur (σ ≈ 2 in tap units).
 // Direction uniform controls horizontal vs vertical pass.
