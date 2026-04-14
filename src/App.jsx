@@ -216,7 +216,8 @@ export default function App() {
     // Shared blur intensity for the single blur layer.
     // The canvas matte cutouts determine where this shared layer is visible.
     const blurRadius = blurVideoOverlays[0]?.blurRadius || 12;
-    const blurPx = blurRadius * SUPERSAMPLE * Math.max(0.1, GLASS_DOWNSAMPLE);
+    // Keep blur radius in canvas/world units so visual blur scales with zoom.
+    const blurPx = blurRadius * zoom * SUPERSAMPLE * Math.max(0.1, GLASS_DOWNSAMPLE);
     const topZ = blurVideoOverlays.reduce((m, o) => Math.max(m, o.z || 0), 0);
     while (clip.clipPath.firstChild) clip.clipPath.removeChild(clip.clipPath.firstChild);
     for (const o of blurVideoOverlays) {
