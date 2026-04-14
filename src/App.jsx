@@ -25,7 +25,7 @@ import { useWebGLCanvas } from './hooks/useWebGLCanvas.js';
 const DEFAULT_PALETTE = ["#C2C0B6", "#30302E", "#262624", "#141413", "#FE8181", "#D97757", "#65BB30", "#2C84DB", "#9B87F5"];
 const COLOR_PROPS = ["color", "bgColor", "borderColor", "lineColor", "dotColor"];
 // CSS blur-video sampling resolution factor (1 = current world-res, 0.5 = half-res).
-const BLUR_VIDEO_DOWNSAMPLE = 0.5;
+const CSSBlurDownsample = 0.5;
 
 // ── App ──
 export default function App() {
@@ -176,7 +176,7 @@ export default function App() {
 
     const bss = SUPERSAMPLE;
     const bInvSS = 1 / bss;
-    const blurDownsample = Math.max(0.1, BLUR_VIDEO_DOWNSAMPLE);
+    const blurDownsample = Math.max(0.1, CSSBlurDownsample);
 
     for (const o of blurVideoOverlays) {
       let el = blurEls.get(o.id);
