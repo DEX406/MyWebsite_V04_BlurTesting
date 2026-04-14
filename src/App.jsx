@@ -187,10 +187,10 @@ export default function App() {
       sharedEl._blurRaf = requestAnimationFrame(repaint);
     }
 
-    // Use the strongest requested blur radius among active blur/video overlaps.
+    // Shared blur intensity for the single blur layer.
     // The canvas matte cutouts determine where this shared layer is visible.
-    const maxBlurRadius = blurVideoOverlays.reduce((m, o) => Math.max(m, o.blurRadius || 12), 0);
-    const blurPx = maxBlurRadius * SUPERSAMPLE * Math.max(0.1, GLASS_DOWNSAMPLE);
+    const blurRadius = blurVideoOverlays[0]?.blurRadius || 12;
+    const blurPx = blurRadius * SUPERSAMPLE * Math.max(0.1, GLASS_DOWNSAMPLE);
     const topZ = blurVideoOverlays.reduce((m, o) => Math.max(m, o.z || 0), 0);
     sharedEl.style.zIndex = String(topZ);
     sharedEl.style.backdropFilter = `blur(${blurPx}px)`;
