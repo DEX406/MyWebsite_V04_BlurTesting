@@ -92,6 +92,7 @@ export default function App() {
   const overlayElsRef = useRef(new Map()); // id → DOM element
   // ── Blur overlay (single shared CSS backdrop-filter div behind canvas) ──
   const sharedBlurElRef = useRef(null); // one DOM div to avoid blur stacking
+  const sharedBlurClipRef = useRef(null); // { svg, clipPath, id }
 
   const syncOverlays = useCallback((overlays, panX, panY, zoom) => {
     const container = overlayRef.current;
@@ -168,6 +169,11 @@ export default function App() {
         sharedEl.remove();
         sharedBlurElRef.current = null;
       }
+      const clip = sharedBlurClipRef.current;
+      if (clip) {
+        clip.svg.remove();
+        sharedBlurClipRef.current = null;
+      }
       return;
     }
 
@@ -187,38 +193,58 @@ export default function App() {
       sharedEl._blurRaf = requestAnimationFrame(repaint);
     }
 
+    let clip = sharedBlurClipRef.current;
+    if (!clip) {
+      const ns = 'http://www.w3.org/2000/svg';
+      const svg = document.createElementNS(ns, 'svg');
+      svg.setAttribute('width', '0');
+      svg.setAttribute('height', '0');
+      svg.style.position = 'absolute';
+      svg.style.pointerEvents = 'none';
+      const defs = document.createElementNS(ns, 'defs');
+      const clipPath = document.createElementNS(ns, 'clipPath');
+      const clipId = 'shared-blur-clip-path';
+      clipPath.setAttribute('id', clipId);
+      clipPath.setAttribute('clipPathUnits', 'userSpaceOnUse');
+      defs.appendChild(clipPath);
+      svg.appendChild(defs);
+      container.appendChild(svg);
+      clip = { svg, clipPath, id: clipId };
+      sharedBlurClipRef.current = clip;
+    }
+
     // Shared blur intensity for the single blur layer.
     // The canvas matte cutouts determine where this shared layer is visible.
     const blurRadius = blurVideoOverlays[0]?.blurRadius || 12;
     const blurPx = blurRadius * SUPERSAMPLE * Math.max(0.1, GLASS_DOWNSAMPLE);
     const topZ = blurVideoOverlays.reduce((m, o) => Math.max(m, o.z || 0), 0);
-    const clipPathD = blurVideoOverlays.map((o) => {
-      const cx = o.x * zoom + panX + (o.w * zoom * 0.5);
-      const cy = o.y * zoom + panY + (o.h * zoom * 0.5);
-      const hw = (o.w * zoom) * 0.5;
-      const hh = (o.h * zoom) * 0.5;
-      const rad = (o.rotation || 0) * Math.PI / 180;
-      const cos = Math.cos(rad);
-      const sin = Math.sin(rad);
-      const corners = [
-        [-hw, -hh],
-        [hw, -hh],
-        [hw, hh],
-        [-hw, hh],
-      ].map(([dx, dy]) => {
-        const x = cx + (dx * cos - dy * sin);
-        const y = cy + (dx * sin + dy * cos);
-        return `${x.toFixed(2)} ${y.toFixed(2)}`;
-      });
-      return `M ${corners[0]} L ${corners[1]} L ${corners[2]} L ${corners[3]} Z`;
-    }).join(' ');
+    while (clip.clipPath.firstChild) clip.clipPath.removeChild(clip.clipPath.firstChild);
+    for (const o of blurVideoOverlays) {
+      const ns = 'http://www.w3.org/2000/svg';
+      const rect = document.createElementNS(ns, 'rect');
+      const x = o.x * zoom + panX;
+      const y = o.y * zoom + panY;
+      const w = o.w * zoom;
+      const h = o.h * zoom;
+      const cx = x + w * 0.5;
+      const cy = y + h * 0.5;
+      const r = Math.max(0, Math.min(o.radius * zoom, w * 0.5, h * 0.5));
+      rect.setAttribute('x', String(x));
+      rect.setAttribute('y', String(y));
+      rect.setAttribute('width', String(w));
+      rect.setAttribute('height', String(h));
+      rect.setAttribute('rx', String(r));
+      rect.setAttribute('ry', String(r));
+      if (o.rotation) rect.setAttribute('transform', `rotate(${o.rotation} ${cx} ${cy})`);
+      clip.clipPath.appendChild(rect);
+    }
 
     sharedEl.style.zIndex = String(topZ);
     sharedEl.style.backdropFilter = `blur(${blurPx}px)`;
     sharedEl.style.webkitBackdropFilter = `blur(${blurPx}px)`;
-    const pathValue = `path('${clipPathD}')`;
-    sharedEl.style.clipPath = pathValue;
-    sharedEl.style.webkitClipPath = pathValue;
+    const clipUrl = `url(#${clip.id})`;
+    sharedEl.style.clipPath = clipUrl;
+    sharedEl.style.webkitClipPath = clipUrl;
     sharedEl.style.display = 'block';
   }, []);
 
@@ -235,6 +261,11 @@ export default function App() {
         if (sharedEl._blurRaf) cancelAnimationFrame(sharedEl._blurRaf);
         sharedEl.remove();
         sharedBlurElRef.current = null;
+      }
+      const clip = sharedBlurClipRef.current;
+      if (clip) {
+        clip.svg.remove();
+        sharedBlurClipRef.current = null;
       }
     };
   }, []);
