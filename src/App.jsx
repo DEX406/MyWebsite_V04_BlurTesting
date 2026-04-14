@@ -91,15 +91,12 @@ export default function App() {
   // ── Media overlay (DOM elements behind canvas for videos/GIFs) ──
   const overlayRef = useRef(null);
   const overlayElsRef = useRef(new Map()); // id → DOM element
-  // ── Blur overlay (CSS backdrop-filter divs behind canvas, matching blur element shape) ──
-  const blurElsRef = useRef(new Map()); // blurId → DOM div with backdrop-filter
 
   const syncOverlays = useCallback((overlays, panX, panY, zoom) => {
     const container = overlayRef.current;
     if (!container) return;
 
     const mediaOverlays = overlays.filter(o => o.type !== 'blur-video');
-    const blurVideoOverlays = overlays.filter(o => o.type === 'blur-video');
 
     // ── Regular media overlays (videos/GIFs — behind canvas) ──
     const activeIds = new Set(mediaOverlays.map(o => o.id));
@@ -157,61 +154,6 @@ export default function App() {
       el.style.transformOrigin = 'center center';
     }
 
-    // ── Blur backdrop overlays: CSS backdrop-filter divs matching blur element shape ──
-    // A single div per blur element with backdrop-filter: blur() blurs live
-    // video/GIF content behind the canvas. The matte cutout in the canvas
-    // makes the blur element area transparent, letting this CSS blur show through.
-    const activeBlurIds = new Set(blurVideoOverlays.map(o => o.id));
-    const blurEls = blurElsRef.current;
-
-    for (const [id, el] of blurEls) {
-      if (!activeBlurIds.has(id)) {
-        if (el._blurRaf) cancelAnimationFrame(el._blurRaf);
-        el.remove();
-        blurEls.delete(id);
-      }
-    }
-
-    const bss = SUPERSAMPLE;
-    const bInvSS = 1 / bss;
-
-    for (const o of blurVideoOverlays) {
-      let el = blurEls.get(o.id);
-      if (!el) {
-        el = document.createElement('div');
-        el.style.cssText = 'position:absolute;top:0;left:0;pointer-events:none;overflow:hidden;transform-origin:center center;';
-        container.appendChild(el);
-        blurEls.set(o.id, el);
-        // rAF loop forces browser to re-composite backdrop-filter every frame,
-        // keeping the blur live over animated GIFs and videos
-        let tick = false;
-        const repaint = () => {
-          el.style.opacity = tick ? '1' : '0.999';
-          tick = !tick;
-          el._blurRaf = requestAnimationFrame(repaint);
-        };
-        el._blurRaf = requestAnimationFrame(repaint);
-      }
-
-      const bScreenX = o.x * zoom + panX;
-      const bScreenY = o.y * zoom + panY;
-      const bScreenW = o.w * zoom;
-      const bScreenH = o.h * zoom;
-
-      el.style.left = (bScreenX - bScreenW * (bss - 1) * 0.5) + 'px';
-      el.style.top = (bScreenY - bScreenH * (bss - 1) * 0.5) + 'px';
-      el.style.width = (bScreenW * bss) + 'px';
-      el.style.height = (bScreenH * bss) + 'px';
-      el.style.zIndex = o.z;
-      el.style.borderRadius = (o.radius * zoom * bss) + 'px';
-      const bRot = o.rotation ? ` rotate(${o.rotation}deg)` : '';
-      el.style.transform = `scale(${bInvSS})${bRot}`;
-
-      // CSS blur radius scaled to match GPU Gaussian blur appearance
-      const blurPx = (o.blurRadius || 12) * zoom * bss;
-      el.style.backdropFilter = `blur(${blurPx}px)`;
-      el.style.webkitBackdropFilter = `blur(${blurPx}px)`;
-    }
   }, []);
 
   // Cleanup overlay elements on unmount
@@ -222,11 +164,6 @@ export default function App() {
         el.remove();
       }
       overlayElsRef.current.clear();
-      for (const el of blurElsRef.current.values()) {
-        if (el._blurRaf) cancelAnimationFrame(el._blurRaf);
-        el.remove();
-      }
-      blurElsRef.current.clear();
     };
   }, []);
 
