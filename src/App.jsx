@@ -1,7 +1,7 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from "react";
 import { ZoomInIcon, ZoomOutIcon, GridIcon, HomeIcon, FloppyIcon, UndoIcon, RedoIcon, CopyIcon, PasteIcon, TrashIcon, GroupIcon, UngroupIcon, BringFrontIcon, SendBackIcon } from './icons.jsx';
 
-import { FONT, FONTS, DEFAULT_BG_GRID } from './constants.js';
+import { FONT, FONTS, DEFAULT_BG_GRID, GLASS_DOWNSAMPLE } from './constants.js';
 import { loadConfiguredFonts } from './fontLibrary.js';
 import { uid, snap, isTyping, pasteItems, migrateItems, applyDragDelta, isGifSrc } from './utils.js';
 import { createBackupZip, restoreFromZip } from './backupRestore.js';
@@ -24,9 +24,6 @@ import { useWebGLCanvas } from './hooks/useWebGLCanvas.js';
 
 const DEFAULT_PALETTE = ["#C2C0B6", "#30302E", "#262624", "#141413", "#FE8181", "#D97757", "#65BB30", "#2C84DB", "#9B87F5"];
 const COLOR_PROPS = ["color", "bgColor", "borderColor", "lineColor", "dotColor"];
-// CSS blur-video sampling resolution factor (1 = current world-res, 0.5 = half-res).
-const CSSBlurDownsample = 0.5;
-
 // ── App ──
 export default function App() {
   const [items, setItems] = useState([]);
@@ -176,7 +173,7 @@ export default function App() {
 
     const bss = SUPERSAMPLE;
     const bInvSS = 1 / bss;
-    const blurDownsample = Math.max(0.1, CSSBlurDownsample);
+    const blurDownsample = Math.max(0.1, GLASS_DOWNSAMPLE);
 
     for (const o of blurVideoOverlays) {
       let el = blurEls.get(o.id);

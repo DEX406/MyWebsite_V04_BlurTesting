@@ -10,6 +10,8 @@ export const DEFAULT_BG_GRID = {
 };
 export const GRID_SPACINGS = [2, 4, 8, 16, 32, 64];
 export const SNAP_ANGLE = 15; // degrees for angle snapping
+// Shared glass/blur downsample factor (1 = full world-res, 0.5 = half-res).
+export const GLASS_DOWNSAMPLE = 0.5;
 
 // ── Text layout constants (shared between CSS textarea and Canvas2D rasterizer) ──
 export const TEXT_PAD_X = 12;    // horizontal padding (px)
