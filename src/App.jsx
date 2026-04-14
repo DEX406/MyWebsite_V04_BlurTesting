@@ -206,7 +206,6 @@ export default function App() {
       el.style.borderRadius = (o.radius * zoom * bss) + 'px';
       const bRot = o.rotation ? ` rotate(${o.rotation}deg)` : '';
       el.style.transform = `scale(${bInvSS})${bRot}`;
-      el.style.opacity = o.opacity ?? 1;
 
       // CSS blur radius scaled to match GPU Gaussian blur appearance
       const blurPx = (o.blurRadius || 12) * zoom * bss;
