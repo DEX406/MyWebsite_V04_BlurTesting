@@ -91,8 +91,7 @@ export default function App() {
   // ── Media overlay (DOM elements behind canvas for videos/GIFs) ──
   const overlayRef = useRef(null);
   const overlayElsRef = useRef(new Map()); // id → DOM element
-  // ── Blur overlay (CSS backdrop-filter divs behind canvas, matching blur element shape) ──
-  const blurElsRef = useRef(new Map()); // blurId → DOM div with backdrop-filter
+  const blurOverlayElsRef = useRef(new Map()); // id → blurred DOM element (masked by blur shapes)
 
   const syncOverlays = useCallback((overlays, panX, panY, zoom) => {
     const container = overlayRef.current;
@@ -104,6 +103,7 @@ export default function App() {
     // ── Regular media overlays (videos/GIFs — behind canvas) ──
     const activeIds = new Set(mediaOverlays.map(o => o.id));
     const els = overlayElsRef.current;
+    const blurEls = blurOverlayElsRef.current;
 
     // Remove stale elements
     for (const [id, el] of els) {
@@ -113,10 +113,18 @@ export default function App() {
         els.delete(id);
       }
     }
+    for (const [id, el] of blurEls) {
+      if (!activeIds.has(id)) {
+        if (el.tagName === 'VIDEO') { el.pause(); el.src = ''; }
+        el.remove();
+        blurEls.delete(id);
+      }
+    }
 
     // Create or update elements
     for (const o of mediaOverlays) {
       let el = els.get(o.id);
+      let blurEl = blurEls.get(o.id);
       if (!el) {
         if (o.type === 'video') {
           el = document.createElement('video');
@@ -136,9 +144,32 @@ export default function App() {
         container.appendChild(el);
         els.set(o.id, el);
       }
+      if (!blurEl) {
+        if (o.type === 'video') {
+          blurEl = document.createElement('video');
+          blurEl.crossOrigin = 'anonymous';
+          blurEl.autoplay = true;
+          blurEl.loop = true;
+          blurEl.muted = true;
+          blurEl.playsInline = true;
+          blurEl.src = o.src;
+          blurEl.play().catch(() => {});
+        } else {
+          blurEl = document.createElement('img');
+          blurEl.crossOrigin = 'anonymous';
+          blurEl.src = o.src;
+        }
+        blurEl.style.cssText = 'position:absolute;top:0;left:0;pointer-events:none;object-fit:cover;transform-origin:center center;image-rendering:pixelated;will-change:transform,filter;';
+        container.appendChild(blurEl);
+        blurEls.set(o.id, blurEl);
+      }
       if (el.src !== o.src && o.src) {
         el.src = o.src;
         if (el.tagName === 'VIDEO') el.play().catch(() => {});
+      }
+      if (blurEl.src !== o.src && o.src) {
+        blurEl.src = o.src;
+        if (blurEl.tagName === 'VIDEO') blurEl.play().catch(() => {});
       }
       const screenX = o.x * zoom + panX;
       const screenY = o.y * zoom + panY;
@@ -155,63 +186,61 @@ export default function App() {
       const rot = o.rotation ? ` rotate(${o.rotation}deg)` : '';
       el.style.transform = `scale(${invSS})${rot}`;
       el.style.transformOrigin = 'center center';
-    }
 
-    // ── Blur backdrop overlays: CSS backdrop-filter divs matching blur element shape ──
-    // A single div per blur element with backdrop-filter: blur() blurs live
-    // video/GIF content behind the canvas. The matte cutout in the canvas
-    // makes the blur element area transparent, letting this CSS blur show through.
-    const activeBlurIds = new Set(blurVideoOverlays.map(o => o.id));
-    const blurEls = blurElsRef.current;
+      blurEl.style.left = el.style.left;
+      blurEl.style.top = el.style.top;
+      blurEl.style.width = el.style.width;
+      blurEl.style.height = el.style.height;
+      blurEl.style.zIndex = el.style.zIndex;
+      blurEl.style.borderRadius = el.style.borderRadius;
+      blurEl.style.transform = el.style.transform;
+      blurEl.style.transformOrigin = el.style.transformOrigin;
 
-    for (const [id, el] of blurEls) {
-      if (!activeBlurIds.has(id)) {
-        if (el._blurRaf) cancelAnimationFrame(el._blurRaf);
-        el.remove();
-        blurEls.delete(id);
+      // Build one mask per media item using all blur shapes above this media.
+      const ssW = screenW * ss;
+      const ssH = screenH * ss;
+      const mediaLeft = screenX - screenW * (ss - 1) * 0.5;
+      const mediaTop = screenY - screenH * (ss - 1) * 0.5;
+      const relevant = blurVideoOverlays.filter(b => {
+        if (b.z <= o.z) return false;
+        const bx = b.x * zoom + panX;
+        const by = b.y * zoom + panY;
+        const bw = b.w * zoom;
+        const bh = b.h * zoom;
+        return !(bx + bw < screenX || bx > screenX + screenW || by + bh < screenY || by > screenY + screenH);
+      });
+
+      if (relevant.length === 0) {
+        blurEl.style.display = 'none';
+      } else {
+        blurEl.style.display = '';
+        const blurPx = (relevant[0].blurRadius || 12) * zoom * ss;
+        blurEl.style.filter = `blur(${blurPx}px)`;
+        blurEl.style.webkitFilter = `blur(${blurPx}px)`;
+
+        const shapes = relevant.map(b => {
+          const x = (b.x * zoom + panX - mediaLeft) * ss;
+          const y = (b.y * zoom + panY - mediaTop) * ss;
+          const w = b.w * zoom * ss;
+          const h = b.h * zoom * ss;
+          const r = (b.radius || 0) * zoom * ss;
+          const deg = b.rotation || 0;
+          const cx = x + w / 2;
+          const cy = y + h / 2;
+          return `<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="${r}" ry="${r}" transform="rotate(${deg} ${cx} ${cy})" fill="white" />`;
+        }).join('');
+
+        const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${Math.max(1, ssW)} ${Math.max(1, ssH)}"><rect width="100%" height="100%" fill="black"/>${shapes}</svg>`;
+        const mask = `url("data:image/svg+xml;utf8,${encodeURIComponent(svg)}")`;
+        blurEl.style.webkitMaskImage = mask;
+        blurEl.style.maskImage = mask;
+        blurEl.style.webkitMaskRepeat = 'no-repeat';
+        blurEl.style.maskRepeat = 'no-repeat';
+        blurEl.style.webkitMaskSize = '100% 100%';
+        blurEl.style.maskSize = '100% 100%';
       }
     }
 
-    const bss = SUPERSAMPLE;
-    const bInvSS = 1 / bss;
-
-    for (const o of blurVideoOverlays) {
-      let el = blurEls.get(o.id);
-      if (!el) {
-        el = document.createElement('div');
-        el.style.cssText = 'position:absolute;top:0;left:0;pointer-events:none;overflow:hidden;transform-origin:center center;';
-        container.appendChild(el);
-        blurEls.set(o.id, el);
-        // rAF loop forces browser to re-composite backdrop-filter every frame,
-        // keeping the blur live over animated GIFs and videos
-        let tick = false;
-        const repaint = () => {
-          el.style.opacity = tick ? '1' : '0.999';
-          tick = !tick;
-          el._blurRaf = requestAnimationFrame(repaint);
-        };
-        el._blurRaf = requestAnimationFrame(repaint);
-      }
-
-      const bScreenX = o.x * zoom + panX;
-      const bScreenY = o.y * zoom + panY;
-      const bScreenW = o.w * zoom;
-      const bScreenH = o.h * zoom;
-
-      el.style.left = (bScreenX - bScreenW * (bss - 1) * 0.5) + 'px';
-      el.style.top = (bScreenY - bScreenH * (bss - 1) * 0.5) + 'px';
-      el.style.width = (bScreenW * bss) + 'px';
-      el.style.height = (bScreenH * bss) + 'px';
-      el.style.zIndex = o.z;
-      el.style.borderRadius = (o.radius * zoom * bss) + 'px';
-      const bRot = o.rotation ? ` rotate(${o.rotation}deg)` : '';
-      el.style.transform = `scale(${bInvSS})${bRot}`;
-
-      // CSS blur radius scaled to match GPU Gaussian blur appearance
-      const blurPx = (o.blurRadius || 12) * zoom * bss;
-      el.style.backdropFilter = `blur(${blurPx}px)`;
-      el.style.webkitBackdropFilter = `blur(${blurPx}px)`;
-    }
   }, []);
 
   // Cleanup overlay elements on unmount
@@ -222,11 +251,11 @@ export default function App() {
         el.remove();
       }
       overlayElsRef.current.clear();
-      for (const el of blurElsRef.current.values()) {
-        if (el._blurRaf) cancelAnimationFrame(el._blurRaf);
+      for (const el of blurOverlayElsRef.current.values()) {
+        if (el.tagName === 'VIDEO') { el.pause(); el.src = ''; }
         el.remove();
       }
-      blurElsRef.current.clear();
+      blurOverlayElsRef.current.clear();
     };
   }, []);
 
