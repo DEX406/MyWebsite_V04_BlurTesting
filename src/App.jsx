@@ -91,16 +91,19 @@ export default function App() {
   // ── Media overlay (DOM elements behind canvas for videos/GIFs) ──
   const overlayRef = useRef(null);
   const overlayElsRef = useRef(new Map()); // id → DOM element
+  const blurOverlayElsRef = useRef(new Map()); // id → blurred DOM element (masked by blur shapes)
 
   const syncOverlays = useCallback((overlays, panX, panY, zoom) => {
     const container = overlayRef.current;
     if (!container) return;
 
     const mediaOverlays = overlays.filter(o => o.type !== 'blur-video');
+    const blurVideoOverlays = overlays.filter(o => o.type === 'blur-video');
 
     // ── Regular media overlays (videos/GIFs — behind canvas) ──
     const activeIds = new Set(mediaOverlays.map(o => o.id));
     const els = overlayElsRef.current;
+    const blurEls = blurOverlayElsRef.current;
 
     // Remove stale elements
     for (const [id, el] of els) {
@@ -110,10 +113,18 @@ export default function App() {
         els.delete(id);
       }
     }
+    for (const [id, el] of blurEls) {
+      if (!activeIds.has(id)) {
+        if (el.tagName === 'VIDEO') { el.pause(); el.src = ''; }
+        el.remove();
+        blurEls.delete(id);
+      }
+    }
 
     // Create or update elements
     for (const o of mediaOverlays) {
       let el = els.get(o.id);
+      let blurEl = blurEls.get(o.id);
       if (!el) {
         if (o.type === 'video') {
           el = document.createElement('video');
@@ -133,9 +144,32 @@ export default function App() {
         container.appendChild(el);
         els.set(o.id, el);
       }
+      if (!blurEl) {
+        if (o.type === 'video') {
+          blurEl = document.createElement('video');
+          blurEl.crossOrigin = 'anonymous';
+          blurEl.autoplay = true;
+          blurEl.loop = true;
+          blurEl.muted = true;
+          blurEl.playsInline = true;
+          blurEl.src = o.src;
+          blurEl.play().catch(() => {});
+        } else {
+          blurEl = document.createElement('img');
+          blurEl.crossOrigin = 'anonymous';
+          blurEl.src = o.src;
+        }
+        blurEl.style.cssText = 'position:absolute;top:0;left:0;pointer-events:none;object-fit:cover;transform-origin:center center;image-rendering:pixelated;will-change:transform,filter;';
+        container.appendChild(blurEl);
+        blurEls.set(o.id, blurEl);
+      }
       if (el.src !== o.src && o.src) {
         el.src = o.src;
         if (el.tagName === 'VIDEO') el.play().catch(() => {});
+      }
+      if (blurEl.src !== o.src && o.src) {
+        blurEl.src = o.src;
+        if (blurEl.tagName === 'VIDEO') blurEl.play().catch(() => {});
       }
       const screenX = o.x * zoom + panX;
       const screenY = o.y * zoom + panY;
@@ -152,6 +186,59 @@ export default function App() {
       const rot = o.rotation ? ` rotate(${o.rotation}deg)` : '';
       el.style.transform = `scale(${invSS})${rot}`;
       el.style.transformOrigin = 'center center';
+
+      blurEl.style.left = el.style.left;
+      blurEl.style.top = el.style.top;
+      blurEl.style.width = el.style.width;
+      blurEl.style.height = el.style.height;
+      blurEl.style.zIndex = el.style.zIndex;
+      blurEl.style.borderRadius = el.style.borderRadius;
+      blurEl.style.transform = el.style.transform;
+      blurEl.style.transformOrigin = el.style.transformOrigin;
+
+      // Build one mask per media item using all blur shapes above this media.
+      const ssW = screenW * ss;
+      const ssH = screenH * ss;
+      const mediaLeft = screenX - screenW * (ss - 1) * 0.5;
+      const mediaTop = screenY - screenH * (ss - 1) * 0.5;
+      const relevant = blurVideoOverlays.filter(b => {
+        if (b.z <= o.z) return false;
+        const bx = b.x * zoom + panX;
+        const by = b.y * zoom + panY;
+        const bw = b.w * zoom;
+        const bh = b.h * zoom;
+        return !(bx + bw < screenX || bx > screenX + screenW || by + bh < screenY || by > screenY + screenH);
+      });
+
+      if (relevant.length === 0) {
+        blurEl.style.display = 'none';
+      } else {
+        blurEl.style.display = '';
+        const blurPx = (relevant[0].blurRadius || 12) * zoom * ss;
+        blurEl.style.filter = `blur(${blurPx}px)`;
+        blurEl.style.webkitFilter = `blur(${blurPx}px)`;
+
+        const shapes = relevant.map(b => {
+          const x = (b.x * zoom + panX - mediaLeft) * ss;
+          const y = (b.y * zoom + panY - mediaTop) * ss;
+          const w = b.w * zoom * ss;
+          const h = b.h * zoom * ss;
+          const r = (b.radius || 0) * zoom * ss;
+          const deg = b.rotation || 0;
+          const cx = x + w / 2;
+          const cy = y + h / 2;
+          return `<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="${r}" ry="${r}" transform="rotate(${deg} ${cx} ${cy})" fill="white" />`;
+        }).join('');
+
+        const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${Math.max(1, ssW)} ${Math.max(1, ssH)}"><rect width="100%" height="100%" fill="black"/>${shapes}</svg>`;
+        const mask = `url("data:image/svg+xml;utf8,${encodeURIComponent(svg)}")`;
+        blurEl.style.webkitMaskImage = mask;
+        blurEl.style.maskImage = mask;
+        blurEl.style.webkitMaskRepeat = 'no-repeat';
+        blurEl.style.maskRepeat = 'no-repeat';
+        blurEl.style.webkitMaskSize = '100% 100%';
+        blurEl.style.maskSize = '100% 100%';
+      }
     }
 
   }, []);
@@ -164,6 +251,11 @@ export default function App() {
         el.remove();
       }
       overlayElsRef.current.clear();
+      for (const el of blurOverlayElsRef.current.values()) {
+        if (el.tagName === 'VIDEO') { el.pause(); el.src = ''; }
+        el.remove();
+      }
+      blurOverlayElsRef.current.clear();
     };
   }, []);
 
