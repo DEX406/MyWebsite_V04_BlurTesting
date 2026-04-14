@@ -40,6 +40,7 @@ export class GPURenderer {
 
     // Blur effect: world-res textures + intermediates for Gaussian blur (zoom-independent)
     this._blurTextures = new Map(); // itemId → { texture, view, intTexture, intView, width, height }
+    this._blurSnapshot = null; // canvas-sized snapshot for one-frame-delay blur
 
     this._initPipelines();
     this._initBuffers();
@@ -218,7 +219,7 @@ export class GPURenderer {
         device: this.device,
         format: this.format,
         alphaMode: 'premultiplied',
-        usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+        usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
       });
     }
   }
@@ -300,18 +301,7 @@ export class GPURenderer {
         if (selSet.has(item.id)) {
           this._collectSelection(item, panDpr, panDprY, zoomDpr, resW, resH, quadDraws);
         }
-        const drawEntry = { quadStart: qs, quadEnd: quadDraws.length };
-        const bm = blurMeta.get(item.id);
-        if (bm) {
-          drawEntry.isBlur = true;
-          drawEntry.blurItemId = item.id;
-          drawEntry.blurW = bm.blurW;
-          drawEntry.blurH = bm.blurH;
-          drawEntry.blurIdx = bm.idx;
-          drawEntry.screenX = item.x * zoomDpr + panDpr;
-          drawEntry.screenY = item.y * zoomDpr + panDprY;
-        }
-        contentDrawOrder.push(drawEntry);
+        contentDrawOrder.push({ quadStart: qs, quadEnd: quadDraws.length });
       }
     }
 
@@ -450,8 +440,6 @@ export class GPURenderer {
       return; // context lost or canvas zero-size
     }
     const textureView = canvasTexture.createView();
-    // Canvas bind group for blit sampling (created once per frame, reused across blur elements)
-    const canvasSampleBG = blurIdx > 0 ? this._getTexBindGroup(canvasTexture.createView(), this.texCache.linearSampler) : null;
 
     const encoder = device.createCommandEncoder();
     let pass = encoder.beginRenderPass({
@@ -476,72 +464,10 @@ export class GPURenderer {
       }
     }
 
-    // ── Content layer (interleaved by z-order, with render pass splits at blur elements) ──
+    // ── Content layer (single uninterrupted pass — blur uses previous frame's textures) ──
     {
       let curPipe = null;
       for (const entry of contentDrawOrder) {
-        // ── Blur element: end pass → copy framebuffer → Gaussian blur → resume pass ──
-        if (entry.isBlur) {
-          pass.end();
-
-          const blurTex = this._blurTextures.get(entry.blurItemId);
-          if (blurTex) {
-            // Blit: downsample canvas framebuffer rect into world-res blur texture
-            const blitOff = entry.blurIdx * 3 * A;
-            const blitP = encoder.beginRenderPass({
-              colorAttachments: [{
-                view: blurTex.view,
-                loadOp: 'clear',
-                clearValue: { r: bgRgb[0], g: bgRgb[1], b: bgRgb[2], a: 1 },
-                storeOp: 'store',
-              }],
-            });
-            blitP.setViewport(0, 0, entry.blurW, entry.blurH, 0, 1);
-            blitP.setPipeline(this.blitPipeline);
-            blitP.setBindGroup(0, this._blurDirBindGroup, [blitOff]);
-            blitP.setBindGroup(1, canvasSampleBG);
-            blitP.setVertexBuffer(0, this.quadVertBuf);
-            blitP.draw(6);
-            blitP.end();
-
-            // 4-pass Gaussian blur (H→int, V→tex, H→int, V→tex)
-            const texBgA = this._getTexBindGroup(blurTex.view, this.texCache.linearSampler);
-            const texBgB = this._getTexBindGroup(blurTex.intView, this.texCache.linearSampler);
-            const hOff = blitOff + A;
-            const vOff = blitOff + A * 2;
-
-            const bp = (targetView, srcBg, dirOff) => {
-              const p = encoder.beginRenderPass({
-                colorAttachments: [{ view: targetView, loadOp: 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 0 } }],
-              });
-              p.setViewport(0, 0, entry.blurW, entry.blurH, 0, 1);
-              p.setPipeline(this.blurPipeline);
-              p.setBindGroup(0, this._blurDirBindGroup, [dirOff]);
-              p.setBindGroup(1, srcBg);
-              p.setVertexBuffer(0, this.quadVertBuf);
-              p.draw(6);
-              p.end();
-            };
-
-            bp(blurTex.intView, texBgA, hOff);  // H: tex→int
-            bp(blurTex.view, texBgB, vOff);     // V: int→tex
-            bp(blurTex.intView, texBgA, hOff);  // H: tex→int
-            bp(blurTex.view, texBgB, vOff);     // V: int→tex
-          }
-
-          // Resume render pass on canvas (preserve existing content)
-          pass = encoder.beginRenderPass({
-            colorAttachments: [{
-              view: textureView,
-              loadOp: 'load',
-              storeOp: 'store',
-            }],
-          });
-          pass.setViewport(0, 0, canvasW, canvasH, 0, 1);
-          curPipe = null;
-        }
-
-        // Draw the entry's quads/lines/circles
         if (entry.quadStart !== undefined) {
           pass.setVertexBuffer(0, this.quadVertBuf);
           for (let i = entry.quadStart; i < entry.quadEnd; i++) {
@@ -608,6 +534,62 @@ export class GPURenderer {
     }
 
     pass.end();
+
+    // ── Post-pass: snapshot canvas and update blur textures for next frame ──
+    // One-frame delay is imperceptible behind a 24px Gaussian blur, but
+    // eliminates ALL render pass splits on the canvas (zero loadOp:'load' cycles).
+    if (blurIdx > 0) {
+      this._getOrCreateSnapshot(canvasW, canvasH);
+      encoder.copyTextureToTexture(
+        { texture: canvasTexture },
+        { texture: this._blurSnapshot },
+        [canvasW, canvasH],
+      );
+      const snapshotBG = this._getTexBindGroup(this._blurSnapshotView, this.texCache.linearSampler);
+
+      for (const [itemId, meta] of blurMeta) {
+        const blurTex = this._blurTextures.get(itemId);
+        if (!blurTex) continue;
+        const blitOff = meta.idx * 3 * A;
+
+        // Blit: downsample snapshot rect into world-res blur texture
+        const blitP = encoder.beginRenderPass({
+          colorAttachments: [{ view: blurTex.view, loadOp: 'clear', clearValue: { r: bgRgb[0], g: bgRgb[1], b: bgRgb[2], a: 1 }, storeOp: 'store' }],
+        });
+        blitP.setViewport(0, 0, meta.blurW, meta.blurH, 0, 1);
+        blitP.setPipeline(this.blitPipeline);
+        blitP.setBindGroup(0, this._blurDirBindGroup, [blitOff]);
+        blitP.setBindGroup(1, snapshotBG);
+        blitP.setVertexBuffer(0, this.quadVertBuf);
+        blitP.draw(6);
+        blitP.end();
+
+        // 4-pass Gaussian blur (H→int, V→tex, H→int, V→tex)
+        const texBgA = this._getTexBindGroup(blurTex.view, this.texCache.linearSampler);
+        const texBgB = this._getTexBindGroup(blurTex.intView, this.texCache.linearSampler);
+        const hOff = blitOff + A;
+        const vOff = blitOff + A * 2;
+
+        const bp = (targetView, srcBg, dirOff) => {
+          const p = encoder.beginRenderPass({
+            colorAttachments: [{ view: targetView, loadOp: 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 0 } }],
+          });
+          p.setViewport(0, 0, meta.blurW, meta.blurH, 0, 1);
+          p.setPipeline(this.blurPipeline);
+          p.setBindGroup(0, this._blurDirBindGroup, [dirOff]);
+          p.setBindGroup(1, srcBg);
+          p.setVertexBuffer(0, this.quadVertBuf);
+          p.draw(6);
+          p.end();
+        };
+
+        bp(blurTex.intView, texBgA, hOff);  // H: tex→int
+        bp(blurTex.view, texBgB, vOff);     // V: int→tex
+        bp(blurTex.intView, texBgA, hOff);  // H: tex→int
+        bp(blurTex.view, texBgB, vOff);     // V: int→tex
+      }
+    }
+
     device.queue.submit([encoder.finish()]);
   }
 
@@ -1029,6 +1011,25 @@ export class GPURenderer {
         this._blurTextures.delete(id);
       }
     }
+    // Destroy snapshot when no blur items remain
+    if (activeIds.size === 0 && this._blurSnapshot) {
+      this._blurSnapshot.destroy();
+      this._blurSnapshot = null;
+      this._blurSnapshotView = null;
+    }
+  }
+
+  _getOrCreateSnapshot(width, height) {
+    if (this._blurSnapshot && this._blurSnapshotW === width && this._blurSnapshotH === height) return;
+    if (this._blurSnapshot) this._blurSnapshot.destroy();
+    this._blurSnapshot = this.device.createTexture({
+      size: [width, height],
+      format: this.format,
+      usage: GPUTextureUsage.COPY_DST | GPUTextureUsage.TEXTURE_BINDING,
+    });
+    this._blurSnapshotView = this._blurSnapshot.createView();
+    this._blurSnapshotW = width;
+    this._blurSnapshotH = height;
   }
 
   // ── Overlay collection (handles, pills, group box) ────────────────────────
@@ -1231,5 +1232,9 @@ export class GPURenderer {
       entry.intTexture.destroy();
     }
     this._blurTextures.clear();
+    if (this._blurSnapshot) {
+      this._blurSnapshot.destroy();
+      this._blurSnapshot = null;
+    }
   }
 }
