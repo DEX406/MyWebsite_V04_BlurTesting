@@ -231,7 +231,7 @@ export default function App() {
     while (clip.clipPath.firstChild) clip.clipPath.removeChild(clip.clipPath.firstChild);
     for (const o of blurVideoOverlays) {
       const ns = 'http://www.w3.org/2000/svg';
-      const rect = document.createElementNS(ns, 'rect');
+      const path = document.createElementNS(ns, 'path');
       const x = o.x * zoom + panX;
       const y = o.y * zoom + panY;
       const w = o.w * zoom;
@@ -239,14 +239,37 @@ export default function App() {
       const cx = x + w * 0.5;
       const cy = y + h * 0.5;
       const r = Math.max(0, Math.min(o.radius * zoom, w * 0.5, h * 0.5));
-      rect.setAttribute('x', String(x));
-      rect.setAttribute('y', String(y));
-      rect.setAttribute('width', String(w));
-      rect.setAttribute('height', String(h));
-      rect.setAttribute('rx', String(r));
-      rect.setAttribute('ry', String(r));
-      if (o.rotation) rect.setAttribute('transform', `rotate(${o.rotation} ${cx} ${cy})`);
-      clip.clipPath.appendChild(rect);
+      const rad = (o.rotation || 0) * Math.PI / 180;
+      const cos = Math.cos(rad);
+      const sin = Math.sin(rad);
+      const rotatePoint = (px, py) => {
+        const dx = px - cx;
+        const dy = py - cy;
+        return [cx + dx * cos - dy * sin, cy + dx * sin + dy * cos];
+      };
+      const points = [];
+      const pushArc = (ax, ay, start, end, steps = 6) => {
+        for (let i = 1; i <= steps; i++) {
+          const t = start + (end - start) * (i / steps);
+          points.push([ax + Math.cos(t) * r, ay + Math.sin(t) * r]);
+        }
+      };
+      if (r < 0.01) {
+        points.push([x, y], [x + w, y], [x + w, y + h], [x, y + h]);
+      } else {
+        points.push([x + r, y], [x + w - r, y]);             // top edge
+        pushArc(x + w - r, y + r, -Math.PI / 2, 0);          // top-right
+        points.push([x + w, y + h - r]);                     // right edge
+        pushArc(x + w - r, y + h - r, 0, Math.PI / 2);       // bottom-right
+        points.push([x + r, y + h]);                         // bottom edge
+        pushArc(x + r, y + h - r, Math.PI / 2, Math.PI);     // bottom-left
+        points.push([x, y + r]);                             // left edge
+        pushArc(x + r, y + r, Math.PI, 3 * Math.PI / 2);     // top-left
+      }
+      const rotated = points.map(([px, py]) => rotatePoint(px, py));
+      const d = rotated.map(([px, py], i) => `${i ? 'L' : 'M'} ${px.toFixed(2)} ${py.toFixed(2)}`).join(' ') + ' Z';
+      path.setAttribute('d', d);
+      clip.clipPath.appendChild(path);
     }
 
     sharedEl.style.zIndex = String(topZ);
