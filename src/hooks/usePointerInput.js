@@ -10,6 +10,7 @@ export function usePointerInput({
   rotatingRef, setRotating,
   editingConnectorRef, setEditingConnector,
   setEditingTextId,
+  editingTextIdRef,
   effectiveSnapRef,
   scheduleSave, animateTo, pushUndo,
   doHitTest,
@@ -55,6 +56,12 @@ export function usePointerInput({
     if (id) {
       const item = items.find(i => i.id === id);
       if (!item) return;
+
+      // Any direct interaction with a different item should close active text edit
+      // so the GPU text pass can reappear immediately.
+      if (editingTextIdRef?.current && editingTextIdRef.current !== id) {
+        setEditingTextId(null);
+      }
 
       if (!action && (e.ctrlKey || e.metaKey)) {
         e.preventDefault();
@@ -186,6 +193,9 @@ export function usePointerInput({
       const dx = (e.clientX - rsz.startX) / zoomRef.current;
       const dy = (e.clientY - rsz.startY) / zoomRef.current;
       const r = computeResize(rsz.item, rsz.handle, dx, dy, es);
+      if (editingTextIdRef?.current === rsz.id) {
+        setItems(p => p.map(i => i.id === rsz.id ? { ...i, x: r.x, y: r.y, w: r.w, h: r.h } : i));
+      }
       itemOverrideRef.current = { id: rsz.id, props: { x: r.x, y: r.y, w: r.w, h: r.h } };
       if (drawBgRef.current) drawBgRef.current();
     } else if (rot) {
