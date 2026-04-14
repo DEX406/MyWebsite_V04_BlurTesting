@@ -392,13 +392,16 @@ fn fs_main(in: CircleVsOutput) -> @location(0) vec4<f32> {
 // ── Blit shader ──────────────────────────────────────────────────────────────
 // Copies a sub-rect from a source texture into the full render target.
 // Used to downsample a screen-space framebuffer region into a world-res blur texture.
-// Uniform layout (16 bytes / 4 floats):
+// Uniform layout (32 bytes / 8 floats):
 //   [0] srcOrigin.x  [1] srcOrigin.y  [2] srcSize.x  [3] srcSize.y
+//   [4] rotCos       [5] rotSin       [6-7] _pad
 
 export const BLIT_SHADER = `
 struct BlitUniforms {
   srcOrigin: vec2<f32>,  // UV origin in source texture
   srcSize:   vec2<f32>,  // UV extent in source texture
+  rotCosSin: vec2<f32>,  // item rotation in screen space (cos, sin)
+  _pad:      vec2<f32>,
 };
 
 struct BlitVsOutput {
@@ -413,7 +416,15 @@ struct BlitVsOutput {
 @vertex
 fn vs_main(@location(0) a_pos: vec2<f32>) -> BlitVsOutput {
   var out: BlitVsOutput;
-  out.uv = u.srcOrigin + a_pos * u.srcSize;
+  let centered = (a_pos - vec2<f32>(0.5, 0.5)) * u.srcSize;
+  let c = u.rotCosSin.x;
+  let s = u.rotCosSin.y;
+  let rotated = vec2<f32>(
+    centered.x * c - centered.y * s,
+    centered.x * s + centered.y * c
+  );
+  let srcCenter = u.srcOrigin + u.srcSize * 0.5;
+  out.uv = srcCenter + rotated;
   var ndc = a_pos * 2.0 - 1.0;
   ndc.y = -ndc.y;
   out.pos = vec4<f32>(ndc, 0.0, 1.0);
@@ -433,7 +444,7 @@ fn fs_main(in: BlitVsOutput) -> @location(0) vec4<f32> {
 // Uniform layout (16 bytes / 4 floats):
 //   [0] direction.x  [1] direction.y  [2-3] _pad
 
-export const BLUR_UNIFORM_SIZE = 16;
+export const BLUR_UNIFORM_SIZE = 32;
 
 export const BLUR_SHADER = `
 struct BlurUniforms {
