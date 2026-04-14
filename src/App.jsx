@@ -1,7 +1,7 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from "react";
 import { ZoomInIcon, ZoomOutIcon, GridIcon, HomeIcon, FloppyIcon, UndoIcon, RedoIcon, CopyIcon, PasteIcon, TrashIcon, GroupIcon, UngroupIcon, BringFrontIcon, SendBackIcon } from './icons.jsx';
 
-import { FONT, FONTS, DEFAULT_BG_GRID } from './constants.js';
+import { FONT, FONTS, DEFAULT_BG_GRID, GLASS_DOWNSAMPLE } from './constants.js';
 import { loadConfiguredFonts } from './fontLibrary.js';
 import { uid, snap, isTyping, pasteItems, migrateItems, applyDragDelta, isGifSrc } from './utils.js';
 import { createBackupZip, restoreFromZip } from './backupRestore.js';
@@ -24,7 +24,6 @@ import { useWebGLCanvas } from './hooks/useWebGLCanvas.js';
 
 const DEFAULT_PALETTE = ["#C2C0B6", "#30302E", "#262624", "#141413", "#FE8181", "#D97757", "#65BB30", "#2C84DB", "#9B87F5"];
 const COLOR_PROPS = ["color", "bgColor", "borderColor", "lineColor", "dotColor"];
-
 // ── App ──
 export default function App() {
   const [items, setItems] = useState([]);
@@ -174,6 +173,7 @@ export default function App() {
 
     const bss = SUPERSAMPLE;
     const bInvSS = 1 / bss;
+    const blurDownsample = Math.max(0.1, GLASS_DOWNSAMPLE);
 
     for (const o of blurVideoOverlays) {
       let el = blurEls.get(o.id);
@@ -197,18 +197,25 @@ export default function App() {
       const bScreenY = o.y * zoom + panY;
       const bScreenW = o.w * zoom;
       const bScreenH = o.h * zoom;
+      // Keep backdrop-filter sampling at canvas/world resolution so zoom only
+      // scales the already-sampled blur, instead of increasing sample density.
+      const sampleW = o.w * bss * blurDownsample;
+      const sampleH = o.h * bss * blurDownsample;
+      const centerX = bScreenX + bScreenW * 0.5;
+      const centerY = bScreenY + bScreenH * 0.5;
 
-      el.style.left = (bScreenX - bScreenW * (bss - 1) * 0.5) + 'px';
-      el.style.top = (bScreenY - bScreenH * (bss - 1) * 0.5) + 'px';
-      el.style.width = (bScreenW * bss) + 'px';
-      el.style.height = (bScreenH * bss) + 'px';
+      el.style.left = (centerX - sampleW * 0.5) + 'px';
+      el.style.top = (centerY - sampleH * 0.5) + 'px';
+      el.style.width = sampleW + 'px';
+      el.style.height = sampleH + 'px';
       el.style.zIndex = o.z;
-      el.style.borderRadius = (o.radius * zoom * bss) + 'px';
+      el.style.borderRadius = (o.radius * bss * blurDownsample) + 'px';
       const bRot = o.rotation ? ` rotate(${o.rotation}deg)` : '';
-      el.style.transform = `scale(${bInvSS})${bRot}`;
+      el.style.transform = `scale(${(zoom * bInvSS / blurDownsample)})${bRot}`;
 
-      // CSS blur radius scaled to match GPU Gaussian blur appearance
-      const blurPx = (o.blurRadius || 12) * zoom * bss;
+      // Blur radius in canvas/world pixels; zoom scales the final result via
+      // element transform, keeping sampling density zoom-independent.
+      const blurPx = (o.blurRadius || 12) * bss * blurDownsample;
       el.style.backdropFilter = `blur(${blurPx}px)`;
       el.style.webkitBackdropFilter = `blur(${blurPx}px)`;
     }

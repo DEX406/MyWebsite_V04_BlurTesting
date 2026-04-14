@@ -9,6 +9,7 @@ import { TextureCache } from './TextureCache.js';
 import { TextRenderer } from './TextRenderer.js';
 import { PillRenderer } from './PillRenderer.js';
 import { hexToRgb, isGifSrc } from '../utils.js';
+import { GLASS_DOWNSAMPLE } from '../constants.js';
 
 function hexToRgba(hex, alpha = 1) {
   return [...hexToRgb(hex), alpha];
@@ -258,8 +259,8 @@ export class GPURenderer {
     let blurIdx = 0;
     for (const item of blurItems) {
       if (item.w <= 0 || item.h <= 0) continue;
-      const blurW = Math.max(2, Math.ceil(item.w));
-      const blurH = Math.max(2, Math.ceil(item.h));
+      const blurW = Math.max(2, Math.ceil(item.w * GLASS_DOWNSAMPLE));
+      const blurH = Math.max(2, Math.ceil(item.h * GLASS_DOWNSAMPLE));
       this._getOrCreateBlurTexture(item.id, blurW, blurH);
       blurMeta.set(item.id, { blurW, blurH, idx: blurIdx++ });
     }
@@ -433,10 +434,10 @@ export class GPURenderer {
         blit[3] = item.h * zoomDpr / canvasH;              // srcSize.y
         // Slot 1: H blur direction
         const hDir = new Float32Array(blurDirBuf, A * (meta.idx * 3 + 1), 4);
-        hDir[0] = BLUR_STEP / meta.blurW;
+        hDir[0] = (BLUR_STEP * GLASS_DOWNSAMPLE) / meta.blurW;
         // Slot 2: V blur direction
         const vDir = new Float32Array(blurDirBuf, A * (meta.idx * 3 + 2), 4);
-        vDir[1] = BLUR_STEP / meta.blurH;
+        vDir[1] = (BLUR_STEP * GLASS_DOWNSAMPLE) / meta.blurH;
       }
       device.queue.writeBuffer(this._blurDirUniformBuf, 0, new Uint8Array(blurDirBuf));
     }
