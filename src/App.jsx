@@ -24,6 +24,8 @@ import { useWebGLCanvas } from './hooks/useWebGLCanvas.js';
 
 const DEFAULT_PALETTE = ["#C2C0B6", "#30302E", "#262624", "#141413", "#FE8181", "#D97757", "#65BB30", "#2C84DB", "#9B87F5"];
 const COLOR_PROPS = ["color", "bgColor", "borderColor", "lineColor", "dotColor"];
+// CSS blur-video sampling resolution factor (1 = current world-res, 0.5 = half-res).
+const BLUR_VIDEO_DOWNSAMPLE = 0.5;
 
 // ── App ──
 export default function App() {
@@ -174,6 +176,7 @@ export default function App() {
 
     const bss = SUPERSAMPLE;
     const bInvSS = 1 / bss;
+    const blurDownsample = Math.max(0.1, BLUR_VIDEO_DOWNSAMPLE);
 
     for (const o of blurVideoOverlays) {
       let el = blurEls.get(o.id);
@@ -199,8 +202,8 @@ export default function App() {
       const bScreenH = o.h * zoom;
       // Keep backdrop-filter sampling at canvas/world resolution so zoom only
       // scales the already-sampled blur, instead of increasing sample density.
-      const sampleW = o.w * bss;
-      const sampleH = o.h * bss;
+      const sampleW = o.w * bss * blurDownsample;
+      const sampleH = o.h * bss * blurDownsample;
       const centerX = bScreenX + bScreenW * 0.5;
       const centerY = bScreenY + bScreenH * 0.5;
 
@@ -209,13 +212,13 @@ export default function App() {
       el.style.width = sampleW + 'px';
       el.style.height = sampleH + 'px';
       el.style.zIndex = o.z;
-      el.style.borderRadius = (o.radius * bss) + 'px';
+      el.style.borderRadius = (o.radius * bss * blurDownsample) + 'px';
       const bRot = o.rotation ? ` rotate(${o.rotation}deg)` : '';
-      el.style.transform = `scale(${(zoom * bInvSS)})${bRot}`;
+      el.style.transform = `scale(${(zoom * bInvSS / blurDownsample)})${bRot}`;
 
       // Blur radius in canvas/world pixels; zoom scales the final result via
       // element transform, keeping sampling density zoom-independent.
-      const blurPx = (o.blurRadius || 12) * bss;
+      const blurPx = (o.blurRadius || 12) * bss * blurDownsample;
       el.style.backdropFilter = `blur(${blurPx}px)`;
       el.style.webkitBackdropFilter = `blur(${blurPx}px)`;
     }
