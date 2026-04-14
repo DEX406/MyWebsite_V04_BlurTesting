@@ -38,7 +38,6 @@ export class GPURenderer {
 
     // Blur effect: offscreen textures for 1:1 GPU Gaussian blur
     this._blurTextures = new Map(); // itemId → { texture, view, width, height }
-    this._blurScale = 1;
     this._blurIntermediate = null; // shared ping-pong texture for Gaussian blur passes
 
     this._initPipelines();
@@ -166,9 +165,6 @@ export class GPURenderer {
     const MAX_BLUR_DRAWS = 256;
     this._blurQuadUniformBuf = device.createBuffer({ size: A * MAX_BLUR_DRAWS, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
     this._blurQuadBindGroup = device.createBindGroup({ layout: this._quadBGL0, entries: [{ binding: 0, resource: { buffer: this._blurQuadUniformBuf, size: QUAD_UNIFORM_SIZE } }] });
-    this._blurGridUniformBuf = device.createBuffer({ size: GRID_UNIFORM_SIZE, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
-    this._blurGridBindGroup = device.createBindGroup({ layout: this._gridBGL, entries: [{ binding: 0, resource: { buffer: this._blurGridUniformBuf } }] });
-
     // Fallback texture bind group (used when no texture is bound)
     this._fallbackTexBG = this._getTexBindGroup(this.texCache.fallback.view, this.texCache.nearestSampler);
 
@@ -894,7 +890,7 @@ export class GPURenderer {
     return [...hexToRgb(item.bgColor), op];
   }
 
-  // ── Blur: offscreen 1/20th-res background capture ─────────────────────────
+  // ── Blur: offscreen 1:1 background capture + Gaussian blur ────────────────
 
   _getOrCreateBlurTexture(id, width, height) {
     const existing = this._blurTextures.get(id);
