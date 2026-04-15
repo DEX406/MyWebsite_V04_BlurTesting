@@ -269,7 +269,7 @@ export class GPURenderer {
 
     // ── Phase 1: Collect all draw commands ──
 
-    const quadDraws = [];   // { uniforms: Float32Array(40), texView, sampler }
+    const quadDraws = [];   // { uniforms: Float32Array(44), texView, sampler }
     const lineDraws = [];   // { uniforms: Float32Array(12), verts: Float32Array }
     const circleDraws = []; // { uniforms: Float32Array(12) }
 
@@ -383,7 +383,7 @@ export class GPURenderer {
     if (allQuads.length > 0) {
       const quadBuf = new ArrayBuffer(A * allQuads.length);
       for (let i = 0; i < allQuads.length; i++) {
-        new Float32Array(quadBuf, A * i, 40).set(allQuads[i].uniforms);
+        new Float32Array(quadBuf, A * i, 44).set(allQuads[i].uniforms);
       }
       device.queue.writeBuffer(this.quadUniformBuf, 0, new Uint8Array(quadBuf));
     }
@@ -625,7 +625,7 @@ export class GPURenderer {
     const shadowSize = hasShadow ? (globalShadow.size || 1.5) : 0;
     const shadowPad = hasShadow ? shadowSize * 5 : 0;
 
-    const u = new Float32Array(40);
+    const u = new Float32Array(44);
     u[0] = resW; u[1] = resH;
     u[2] = panX; u[3] = panY;
     u[4] = zoom;
@@ -652,6 +652,8 @@ export class GPURenderer {
     u[36] = globalShadow?.opacity ?? 0.1;
     u[37] = 0; // isSelection
     u[38] = 0; // textAlpha
+    u[39] = 0; // noiseEnabled
+    u[40] = 0; // noiseIntensity
 
     let texView = null;
     let sampler = this.texCache.nearestSampler;
@@ -667,7 +669,7 @@ export class GPURenderer {
         draws.push({ uniforms: new Float32Array(u), texBindGroup: this._fallbackTexBG, isMatte: false });
 
         // Pass 2: matte cutout at blur element bounds (always full punch-through)
-        const mu = new Float32Array(40);
+        const mu = new Float32Array(44);
         mu[0] = resW; mu[1] = resH;
         mu[2] = panX; mu[3] = panY;
         mu[4] = zoom;
@@ -693,12 +695,15 @@ export class GPURenderer {
 
         // Pass 4: colored fill overlay (bgColor at bgOpacity — the only thing opacity controls)
         const bgColor = this._getBgColor(item);
-        if (bgColor[3] > 0) {
+        if (bgColor[3] > 0 || item.noiseEnabled) {
           const fu = new Float32Array(u);
           fu[12] = item.w; fu[13] = item.h;
           fu[14] = 0; fu[15] = 0;
           fu[33] = 0; fu[34] = 0;
           fu.set(bgColor, 16);
+          const noise = this._getNoiseSettings(item);
+          fu[39] = noise.enabled;
+          fu[40] = noise.intensity;
           draws.push({ uniforms: fu, texBindGroup: this._fallbackTexBG, isMatte: false });
         }
 
@@ -748,7 +753,7 @@ export class GPURenderer {
         draws.push({ uniforms: new Float32Array(u), texBindGroup: this._fallbackTexBG, isMatte: false });
 
         // Pass 2: matte cutout (erases framebuffer inside rounded rect)
-        const mu = new Float32Array(40);
+        const mu = new Float32Array(44);
         mu[0] = resW; mu[1] = resH;
         mu[2] = panX; mu[3] = panY;
         mu[4] = zoom;
@@ -798,10 +803,13 @@ export class GPURenderer {
       const bgColor = this._getBgColor(item);
 
       // Pass 1: background fill
-      if (bgColor[3] > 0) {
+      if (bgColor[3] > 0 || item.noiseEnabled) {
         const u1 = new Float32Array(u);
         u1[33] = 0; // not textured
         u1.set(bgColor, 16);
+        const noise = this._getNoiseSettings(item);
+        u1[39] = noise.enabled;
+        u1[40] = noise.intensity;
         draws.push({ uniforms: u1, texBindGroup: this._fallbackTexBG });
       }
 
@@ -820,7 +828,11 @@ export class GPURenderer {
       return;
     } else if (item.type === 'shape') {
       u[33] = 0;
-      u.set(this._getBgColor(item), 16);
+      const bgColor = this._getBgColor(item);
+      u.set(bgColor, 16);
+      const noise = this._getNoiseSettings(item);
+      u[39] = noise.enabled;
+      u[40] = noise.intensity;
     } else {
       return;
     }
@@ -833,7 +845,7 @@ export class GPURenderer {
 
   _collectSelection(item, panX, panY, zoom, resW, resH, draws) {
     const pad = 3;
-    const u = new Float32Array(40);
+    const u = new Float32Array(44);
     u[0] = resW; u[1] = resH;
     u[2] = panX; u[3] = panY;
     u[4] = zoom;
@@ -1002,6 +1014,15 @@ export class GPURenderer {
     return [...hexToRgb(item.bgColor), op];
   }
 
+  _getNoiseSettings(item) {
+    const enabled = item.noiseEnabled ? 1 : 0;
+    const baseIntensity = Math.max(0, Math.min(1, item.noiseIntensity ?? 0.2));
+    return {
+      enabled,
+      intensity: enabled ? baseIntensity : 0,
+    };
+  }
+
   // ── Blur: offscreen 1:1 background capture + Gaussian blur ────────────────
 
   _getOrCreateBlurTexture(id, width, height) {
@@ -1146,7 +1167,7 @@ export class GPURenderer {
     const w = maxX - minX;
     const h = maxY - minY;
 
-    const u = new Float32Array(40);
+    const u = new Float32Array(44);
     u[0] = resW; u[1] = resH; u[2] = panDpr; u[3] = panDprY; u[4] = zoomDpr;
     u[5] = 0; u[6] = 6; u[7] = 1.0;
     u[8] = minX; u[9] = minY; u[10] = w; u[11] = h;
@@ -1196,7 +1217,7 @@ export class GPURenderer {
     const pillLeft = item.x + item.w / 2 - pill.cssWidth / 2;
     const pillTop = item.y + item.h + 8;
 
-    const u = new Float32Array(40);
+    const u = new Float32Array(44);
     u[0] = resW; u[1] = resH; u[2] = panDpr; u[3] = panDprY; u[4] = zoomDpr;
     u[5] = 0; u[6] = 0; u[7] = 1.0;
     u[8] = pillLeft; u[9] = pillTop;
