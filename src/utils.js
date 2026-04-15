@@ -61,6 +61,27 @@ export function itemShadowEnabled(item) {
   return item.shadow ?? (item.type !== "shape" && item.type !== "text");
 }
 
+const FLASHABLE_TYPES = new Set(["text", "image", "shape"]);
+
+export function itemSupportsFlash(item) {
+  return !!item && FLASHABLE_TYPES.has(item.type);
+}
+
+export function isItemFlashEnabled(item) {
+  return itemSupportsFlash(item) && !!item.flashEnabled;
+}
+
+export function isItemVisibleAtTime(item, now = Date.now()) {
+  if (!isItemFlashEnabled(item)) return true;
+  const onMs = Math.max(0, Number(item.flashOnMs ?? 500));
+  const offMs = Math.max(0, Number(item.flashOffMs ?? 500));
+  if (onMs <= 0 && offMs <= 0) return true;
+  if (onMs <= 0) return false;
+  if (offMs <= 0) return true;
+  const cycle = onMs + offMs;
+  return (now % cycle) < onMs;
+}
+
 /* ── Rotation-aware 8-point resize ── */
 const HANDLE_CFG = {
   tl: { dx: -1, dy: -1, ax:  1, ay:  1 },

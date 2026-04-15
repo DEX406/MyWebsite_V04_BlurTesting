@@ -8,7 +8,7 @@ import {
 import { TextureCache } from './TextureCache.js';
 import { TextRenderer } from './TextRenderer.js';
 import { PillRenderer } from './PillRenderer.js';
-import { hexToRgb, isGifSrc } from '../utils.js';
+import { hexToRgb, isGifSrc, isItemVisibleAtTime } from '../utils.js';
 import { GLASS_DOWNSAMPLE } from '../constants.js';
 
 function hexToRgba(hex, alpha = 1) {
@@ -285,6 +285,8 @@ export class GPURenderer {
 
     const contentDrawOrder = [];
 
+    const now = Date.now();
+
     for (const item of sorted) {
       if (item.type === 'connector') {
         const cL = Math.min(item.x1, item.x2), cT = Math.min(item.y1, item.y2);
@@ -296,7 +298,9 @@ export class GPURenderer {
       } else {
         if (item.x + item.w < vpLeft || item.x > vpRight || item.y + item.h < vpTop || item.y > vpBottom) continue;
         const qs = quadDraws.length;
-        this._collectItem(item, panDpr, panDprY, zoomDpr, resW, resH, globalShadow, editingTextId, quadDraws);
+        if (isItemVisibleAtTime(item, now)) {
+          this._collectItem(item, panDpr, panDprY, zoomDpr, resW, resH, globalShadow, editingTextId, quadDraws);
+        }
         // Selection outline immediately after the item (same z-layer)
         if (selSet.has(item.id)) {
           this._collectSelection(item, panDpr, panDprY, zoomDpr, resW, resH, quadDraws);

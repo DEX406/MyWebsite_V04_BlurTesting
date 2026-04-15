@@ -363,6 +363,44 @@ export function PropertiesPanel({ isAdmin, selectedIds, items, openColorPicker, 
         )}
           </Section>
 
+          {/* ── Flash visibility ── */}
+          {(type === "text" || type === "image" || type === "shape") && (
+            <Section title="Flash">
+              <Toggle
+                label={sel.flashEnabled ? "Flash On" : "Flash Off"}
+                active={!!sel.flashEnabled}
+                onClick={() => updateAll(
+                  sel.flashEnabled
+                    ? { flashEnabled: false }
+                    : {
+                        flashEnabled: true,
+                        flashOnMs: Math.max(0, Number(sel.flashOnMs ?? 500)),
+                        flashOffMs: Math.max(0, Number(sel.flashOffMs ?? 500)),
+                      }
+                )}
+                flex
+              />
+              <div style={{ display: "flex", gap: GAP }}>
+                <NumPill
+                  label="On interval"
+                  value={Math.max(0, Math.round(sel.flashOnMs ?? 500))}
+                  onChange={v => updateAll({ flashOnMs: Math.max(0, v) })}
+                  min={0}
+                  max={60000}
+                  suffix="ms"
+                />
+                <NumPill
+                  label="Off interval"
+                  value={Math.max(0, Math.round(sel.flashOffMs ?? 500))}
+                  onChange={v => updateAll({ flashOffMs: Math.max(0, v) })}
+                  min={0}
+                  max={60000}
+                  suffix="ms"
+                />
+              </div>
+            </Section>
+          )}
+
           {/* ── Text ── */}
           {(type === "text" || type === "link") && (
             <Section title="Text">
