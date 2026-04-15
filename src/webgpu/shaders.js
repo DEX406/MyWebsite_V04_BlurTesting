@@ -240,19 +240,22 @@ fn fs_main(in: QuadVsOutput) -> @location(0) vec4<f32> {
   } else {
     col = u.color;
     if (u.noise_enabled > 0.5 && u.noise_intensity > 0.0) {
-      // Anchor noise to world/canvas coordinates (not screen), so zooming
-      // doesn't change the apparent grain scale.
-      let world = (u.item_pos - u.pad_offset) + item_local;
-      let noise = hash12(vec2<i32>(floor(world)));
+      // Anchor noise in item/canvas space (not screen space), so zooming
+      // doesn't change grain scale and the pattern stays stable.
+      let seed = vec2<i32>(floor(u.item_pos));
+      let coord = vec2<i32>(floor(item_local)) + seed;
+      let noise = hash12(coord);
       let noise_alpha = clamp(noise * u.noise_intensity, 0.0, 1.0);
 
-      // Compose a separate subtractive (black) noise layer on top of fill.
-      // This keeps grain visible even if fill alpha is 0.
+      // Separate subtractive noise layer:
+      // - with fill: darken fill RGB (alpha unchanged)
+      // - without fill: render black noisy alpha so grain is still visible
       let fill_alpha = clamp(col.a, 0.0, 1.0);
-      let out_alpha = fill_alpha + noise_alpha * (1.0 - fill_alpha);
-      let out_premul = col.rgb * fill_alpha * (1.0 - noise_alpha);
-      let out_rgb = select(vec3<f32>(0.0), out_premul / out_alpha, out_alpha > 1e-5);
-      col = vec4<f32>(out_rgb, out_alpha);
+      if (fill_alpha > 1e-5) {
+        col = vec4<f32>(col.rgb * (1.0 - noise_alpha), fill_alpha);
+      } else {
+        col = vec4<f32>(0.0, 0.0, 0.0, noise_alpha);
+      }
     }
   }
 
