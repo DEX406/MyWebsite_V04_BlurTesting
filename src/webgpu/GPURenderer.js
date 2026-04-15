@@ -695,13 +695,13 @@ export class GPURenderer {
 
         // Pass 4: colored fill overlay (bgColor at bgOpacity — the only thing opacity controls)
         const bgColor = this._getBgColor(item);
-        if (bgColor[3] > 0) {
+        if (bgColor[3] > 0 || item.noiseEnabled) {
           const fu = new Float32Array(u);
           fu[12] = item.w; fu[13] = item.h;
           fu[14] = 0; fu[15] = 0;
           fu[33] = 0; fu[34] = 0;
           fu.set(bgColor, 16);
-          const noise = this._getNoiseSettings(item, bgColor[3]);
+          const noise = this._getNoiseSettings(item);
           fu[39] = noise.enabled;
           fu[40] = noise.intensity;
           draws.push({ uniforms: fu, texBindGroup: this._fallbackTexBG, isMatte: false });
@@ -803,11 +803,11 @@ export class GPURenderer {
       const bgColor = this._getBgColor(item);
 
       // Pass 1: background fill
-      if (bgColor[3] > 0) {
+      if (bgColor[3] > 0 || item.noiseEnabled) {
         const u1 = new Float32Array(u);
         u1[33] = 0; // not textured
         u1.set(bgColor, 16);
-        const noise = this._getNoiseSettings(item, bgColor[3]);
+        const noise = this._getNoiseSettings(item);
         u1[39] = noise.enabled;
         u1[40] = noise.intensity;
         draws.push({ uniforms: u1, texBindGroup: this._fallbackTexBG });
@@ -830,7 +830,7 @@ export class GPURenderer {
       u[33] = 0;
       const bgColor = this._getBgColor(item);
       u.set(bgColor, 16);
-      const noise = this._getNoiseSettings(item, bgColor[3]);
+      const noise = this._getNoiseSettings(item);
       u[39] = noise.enabled;
       u[40] = noise.intensity;
     } else {
@@ -1014,13 +1014,12 @@ export class GPURenderer {
     return [...hexToRgb(item.bgColor), op];
   }
 
-  _getNoiseSettings(item, bgAlpha) {
+  _getNoiseSettings(item) {
     const enabled = item.noiseEnabled ? 1 : 0;
     const baseIntensity = Math.max(0, Math.min(1, item.noiseIntensity ?? 0.2));
-    const alphaScale = Math.max(0, Math.min(1, bgAlpha ?? 0));
     return {
       enabled,
-      intensity: enabled ? (baseIntensity * alphaScale) : 0,
+      intensity: enabled ? baseIntensity : 0,
     };
   }
 

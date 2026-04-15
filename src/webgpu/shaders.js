@@ -171,8 +171,21 @@ fn rounded_box_sdf(p: vec2<f32>, half_size: vec2<f32>, r: f32) -> f32 {
   return min(max(q.x, q.y), 0.0) + length(max(q, vec2<f32>(0.0))) - r;
 }
 
-fn hash12(p: vec2<f32>) -> f32 {
-  return fract(sin(dot(p, vec2<f32>(127.1, 311.7))) * 43758.5453123);
+fn hash_u32(x: u32) -> u32 {
+  var v = x;
+  v = v ^ (v >> 16u);
+  v = v * 0x7feb352du;
+  v = v ^ (v >> 15u);
+  v = v * 0x846ca68bu;
+  v = v ^ (v >> 16u);
+  return v;
+}
+
+fn hash12(p: vec2<i32>) -> f32 {
+  let x = bitcast<u32>(p.x);
+  let y = bitcast<u32>(p.y);
+  let h = hash_u32(x * 73856093u ^ y * 19349663u);
+  return f32(h) * (1.0 / 4294967295.0);
 }
 
 @fragment
@@ -227,10 +240,19 @@ fn fs_main(in: QuadVsOutput) -> @location(0) vec4<f32> {
   } else {
     col = u.color;
     if (u.noise_enabled > 0.5 && u.noise_intensity > 0.0) {
-      let noise = hash12(floor(in.pos.xy)); // static 1:1 screen-pixel noise
-      let noise_mul = mix(1.0 - u.noise_intensity, 1.0, noise);
-      let alpha_factor = clamp(col.a * u.opacity, 0.0, 1.0);
-      col = vec4<f32>(col.rgb * mix(1.0, noise_mul, alpha_factor), col.a);
+      // Anchor noise to world/canvas coordinates (not screen), so zooming
+      // doesn't change the apparent grain scale.
+      let world = (u.item_pos - u.pad_offset) + item_local;
+      let noise = hash12(vec2<i32>(floor(world)));
+      let noise_alpha = clamp(noise * u.noise_intensity, 0.0, 1.0);
+
+      // Compose a separate subtractive (black) noise layer on top of fill.
+      // This keeps grain visible even if fill alpha is 0.
+      let fill_alpha = clamp(col.a, 0.0, 1.0);
+      let out_alpha = fill_alpha + noise_alpha * (1.0 - fill_alpha);
+      let out_premul = col.rgb * fill_alpha * (1.0 - noise_alpha);
+      let out_rgb = select(vec3<f32>(0.0), out_premul / out_alpha, out_alpha > 1e-5);
+      col = vec4<f32>(out_rgb, out_alpha);
     }
   }
 
