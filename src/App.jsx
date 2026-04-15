@@ -3,7 +3,7 @@ import { ZoomInIcon, ZoomOutIcon, GridIcon, HomeIcon, FloppyIcon, UndoIcon, Redo
 
 import { FONT, FONTS, DEFAULT_BG_GRID, GLASS_DOWNSAMPLE } from './constants.js';
 import { loadConfiguredFonts } from './fontLibrary.js';
-import { uid, snap, isTyping, pasteItems, migrateItems, applyDragDelta, isGifSrc } from './utils.js';
+import { uid, snap, isTyping, pasteItems, migrateItems, applyDragDelta, isGifSrc, isItemFlashEnabled } from './utils.js';
 import { createBackupZip, restoreFromZip } from './backupRestore.js';
 import { tbBtn, tbSurface, tbSep, togBtn, infoText, panelSurface, UI_BG, UI_BORDER, Z } from './styles.js';
 import { CanvasItem } from './components/CanvasItem.jsx';
@@ -305,6 +305,16 @@ export default function App() {
   useEffect(() => {
     if (drawBgRef.current) drawBgRef.current();
   }, [bgGrid, items, selectedIds, globalShadow, editingTextId]);
+
+  // Re-render at a steady cadence while flash visibility is enabled on any item.
+  useEffect(() => {
+    const hasFlashingItems = items.some(isItemFlashEnabled);
+    if (!hasFlashingItems) return;
+    const timer = setInterval(() => {
+      if (drawBgRef.current) drawBgRef.current();
+    }, 33);
+    return () => clearInterval(timer);
+  }, [items]);
 
   // Re-render on viewport container resize
   useEffect(() => {
