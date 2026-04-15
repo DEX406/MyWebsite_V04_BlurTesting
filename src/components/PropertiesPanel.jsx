@@ -352,6 +352,17 @@ export function PropertiesPanel({ isAdmin, selectedIds, items, openColorPicker, 
               }} />
               <Toggle label="Blur" active={!!sel.bgBlur} onClick={() => updateAll({ bgBlur: !sel.bgBlur })} />
             </div>
+            <div style={{ display: "flex", gap: GAP }}>
+              <Toggle label="Noise" active={!!sel.noiseEnabled} onClick={() => updateAll({ noiseEnabled: !sel.noiseEnabled })} />
+              <Slider
+                label="Noise Intensity"
+                value={Math.round((sel.noiseIntensity ?? 0.2) * 100)}
+                min={0}
+                max={100}
+                suffix="%"
+                onChange={v => updateAll({ noiseIntensity: v / 100 })}
+              />
+            </div>
           </>
         )}
 

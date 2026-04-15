@@ -4,8 +4,8 @@
 //
 // Uniform buffer byte sizes (for JS-side allocation):
 export const GRID_UNIFORM_SIZE = 128;
-export const QUAD_UNIFORM_SIZE = 160;
-export const MATTE_UNIFORM_SIZE = 160; // same layout as quad
+export const QUAD_UNIFORM_SIZE = 176;
+export const MATTE_UNIFORM_SIZE = 176; // same layout as quad
 export const LINE_UNIFORM_SIZE = 48;
 export const CIRCLE_UNIFORM_SIZE = 48;
 
@@ -89,7 +89,7 @@ fn fs_main(@builtin(position) frag_pos: vec4<f32>) -> @location(0) vec4<f32> {
 
 // ── Quad shader ────────────────────────────────────────────────────────────────
 // Renders images, shapes, text, links, shadows, borders, selection outlines.
-// Uniform layout (160 bytes / 40 floats):
+// Uniform layout (176 bytes / 44 floats):
 //   [0]  resolution.x [1]  resolution.y
 //   [2]  pan.x        [3]  pan.y
 //   [4]  zoom         [5]  rotation       [6]  radius       [7]  opacity
@@ -102,7 +102,8 @@ fn fs_main(@builtin(position) frag_pos: vec4<f32>) -> @location(0) vec4<f32> {
 //   [24] borderColor.r [25] borderColor.g [26] borderColor.b [27] borderColor.a
 //   [28] textColor.r  [29] textColor.g    [30] textColor.b  [31] textColor.a
 //   [32] borderWidth  [33] textured       [34] hasShadow    [35] shadowSize
-//   [36] shadowOpacity [37] isSelection   [38] textAlpha    [39] _pad
+//   [36] shadowOpacity [37] isSelection   [38] textAlpha    [39] noiseEnabled
+//   [40] noiseIntensity [41-43] _pad
 
 export const QUAD_SHADER = `
 struct QuadUniforms {
@@ -127,7 +128,11 @@ struct QuadUniforms {
   shadow_opacity: f32,        // offset 144
   is_selection:   f32,        // offset 148
   text_alpha:     f32,        // offset 152
-  _pad:           f32,        // offset 156
+  noise_enabled:  f32,        // offset 156
+  noise_intensity:f32,        // offset 160
+  _pad0:          f32,        // offset 164
+  _pad1:          f32,        // offset 168
+  _pad2:          f32,        // offset 172
 };
 
 struct QuadVsOutput {
@@ -164,6 +169,10 @@ fn vs_main(@location(0) a_pos: vec2<f32>) -> QuadVsOutput {
 fn rounded_box_sdf(p: vec2<f32>, half_size: vec2<f32>, r: f32) -> f32 {
   let q = abs(p) - half_size + r;
   return min(max(q.x, q.y), 0.0) + length(max(q, vec2<f32>(0.0))) - r;
+}
+
+fn hash12(p: vec2<f32>) -> f32 {
+  return fract(sin(dot(p, vec2<f32>(127.1, 311.7))) * 43758.5453123);
 }
 
 @fragment
@@ -217,6 +226,12 @@ fn fs_main(in: QuadVsOutput) -> @location(0) vec4<f32> {
     col = tex_sample;
   } else {
     col = u.color;
+    if (u.noise_enabled > 0.5 && u.noise_intensity > 0.0) {
+      let noise = hash12(floor(in.pos.xy)); // static 1:1 screen-pixel noise
+      let noise_mul = mix(1.0 - u.noise_intensity, 1.0, noise);
+      let alpha_factor = clamp(col.a * u.opacity, 0.0, 1.0);
+      col = vec4<f32>(col.rgb * mix(1.0, noise_mul, alpha_factor), col.a);
+    }
   }
 
   return vec4<f32>(col.rgb, col.a * aa * u.opacity);
@@ -287,7 +302,11 @@ struct QuadUniforms {
   shadow_opacity: f32,
   is_selection:   f32,
   text_alpha:     f32,
-  _pad:           f32,
+  noise_enabled:  f32,
+  noise_intensity:f32,
+  _pad0:          f32,
+  _pad1:          f32,
+  _pad2:          f32,
 };
 
 struct MatteVsOutput {
