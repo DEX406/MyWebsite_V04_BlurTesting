@@ -306,6 +306,17 @@ export default function App() {
     if (drawBgRef.current) drawBgRef.current();
   }, [bgGrid, items, selectedIds, globalShadow, editingTextId]);
 
+  // Ensure text raster is redrawn immediately when exiting text edit mode.
+  const prevEditingTextIdRef = useRef(null);
+  useEffect(() => {
+    const prevId = prevEditingTextIdRef.current;
+    if (prevId && editingTextId === null) {
+      webgl.invalidateText(prevId);
+      if (drawBgRef.current) drawBgRef.current();
+    }
+    prevEditingTextIdRef.current = editingTextId;
+  }, [editingTextId, webgl.invalidateText]);
+
   // Re-render on viewport container resize
   useEffect(() => {
     const el = canvasRef.current;
@@ -456,7 +467,7 @@ export default function App() {
     vp, items, setItems, selectedIds, setSelectedIds, isAdmin,
     draggingRef, setDragging, resizingRef, setResizing,
     rotatingRef, setRotating, editingConnectorRef, setEditingConnector,
-    setEditingTextId, effectiveSnapRef, scheduleSave, animateTo, pushUndo,
+    setEditingTextId, editingTextIdRef, effectiveSnapRef, scheduleSave, animateTo, pushUndo,
     doHitTest: webgl.doHitTest, setBoxSelect, dragDeltaRef, itemOverrideRef,
   });
 
