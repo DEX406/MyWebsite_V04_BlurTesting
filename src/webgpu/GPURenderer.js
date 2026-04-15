@@ -383,7 +383,7 @@ export class GPURenderer {
     if (allQuads.length > 0) {
       const quadBuf = new ArrayBuffer(A * allQuads.length);
       for (let i = 0; i < allQuads.length; i++) {
-        new Float32Array(quadBuf, A * i, 40).set(allQuads[i].uniforms);
+        new Float32Array(quadBuf, A * i, 44).set(allQuads[i].uniforms);
       }
       device.queue.writeBuffer(this.quadUniformBuf, 0, new Uint8Array(quadBuf));
     }
