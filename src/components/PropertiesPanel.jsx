@@ -382,7 +382,7 @@ export function PropertiesPanel({ isAdmin, selectedIds, items, openColorPicker, 
               />
               <div style={{ display: "flex", gap: GAP }}>
                 <NumPill
-                  label="On interval"
+                  label="On"
                   value={Math.max(0, Math.round(sel.flashOnMs ?? 500))}
                   onChange={v => updateAll({ flashOnMs: Math.max(0, v) })}
                   min={0}
@@ -390,7 +390,7 @@ export function PropertiesPanel({ isAdmin, selectedIds, items, openColorPicker, 
                   suffix="ms"
                 />
                 <NumPill
-                  label="Off interval"
+                  label="Off"
                   value={Math.max(0, Math.round(sel.flashOffMs ?? 500))}
                   onChange={v => updateAll({ flashOffMs: Math.max(0, v) })}
                   min={0}
