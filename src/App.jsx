@@ -174,16 +174,18 @@ export default function App() {
 
     if (!sharedEl) {
       sharedEl = document.createElement('div');
-      // CSS animation forces continuous compositor updates for backdrop-filter
-      // without a JS rAF loop (which fights the main render loop on iOS).
+      // Continuous CSS animation forces the compositor to re-evaluate backdrop-filter
+      // every frame. `linear` timing = opacity is interpolated each frame (unlike
+      // `steps()` which only recomposites at discrete boundaries). This replaces the
+      // old JS rAF loop that fought the main render loop on iOS.
       sharedEl.style.cssText = 'position:absolute;top:0;left:0;right:0;bottom:0;pointer-events:none;will-change:backdrop-filter;';
       if (!document.getElementById('_bf')) {
         const s = document.createElement('style');
         s.id = '_bf';
-        s.textContent = '@keyframes _bf{0%{opacity:1}50%{opacity:.999}100%{opacity:1}}';
+        s.textContent = '@keyframes _bf{from{opacity:1}to{opacity:.999}}';
         document.head.appendChild(s);
       }
-      sharedEl.style.animation = '_bf .5s steps(2) infinite';
+      sharedEl.style.animation = '_bf .1s linear infinite alternate';
       container.appendChild(sharedEl);
       sharedBlurElRef.current = sharedEl;
     }
