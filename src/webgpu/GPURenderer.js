@@ -15,9 +15,7 @@ function hexToRgba(hex, alpha = 1) {
   return [...hexToRgb(hex), alpha];
 }
 
-const IS_IOS = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
-  (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
-export const SUPERSAMPLE = IS_IOS ? 1 : 2;
+export const SUPERSAMPLE = 2;
 const MAX_QUAD_DRAWS = 1024;
 const MAX_LINE_DRAWS = 512;
 const MAX_CIRCLE_DRAWS = 1024;
