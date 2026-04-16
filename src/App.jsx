@@ -161,6 +161,7 @@ export default function App() {
 
     if (!blurCount) {
       if (sharedEl) {
+        if (sharedEl._blurRaf) cancelAnimationFrame(sharedEl._blurRaf);
         sharedEl.remove();
         sharedBlurElRef.current = null;
       }
@@ -174,18 +175,7 @@ export default function App() {
 
     if (!sharedEl) {
       sharedEl = document.createElement('div');
-      // Continuous CSS animation forces the compositor to re-evaluate backdrop-filter
-      // every frame. `linear` timing = opacity is interpolated each frame (unlike
-      // `steps()` which only recomposites at discrete boundaries). This replaces the
-      // old JS rAF loop that fought the main render loop on iOS.
       sharedEl.style.cssText = 'position:absolute;top:0;left:0;right:0;bottom:0;pointer-events:none;will-change:backdrop-filter;';
-      if (!document.getElementById('_bf')) {
-        const s = document.createElement('style');
-        s.id = '_bf';
-        s.textContent = '@keyframes _bf{from{opacity:1}to{opacity:.999}}';
-        document.head.appendChild(s);
-      }
-      sharedEl.style.animation = '_bf .1s linear infinite alternate';
       container.appendChild(sharedEl);
       sharedBlurElRef.current = sharedEl;
     }
@@ -242,12 +232,31 @@ export default function App() {
     }
 
     sharedEl.style.zIndex = String(topZ);
-    sharedEl.style.backdropFilter = `blur(${blurPx}px)`;
-    sharedEl.style.webkitBackdropFilter = `blur(${blurPx}px)`;
+    // Micro-jitter the blur value each frame so the browser can never cache the
+    // backdrop-filter result — forces 1:1 re-evaluation against underlying content.
+    const jitter = (performance.now() % 2) * 0.00005;
+    const blurVal = `blur(${blurPx + jitter}px)`;
+    sharedEl.style.backdropFilter = blurVal;
+    sharedEl.style.webkitBackdropFilter = blurVal;
     const clipUrl = `url(#${clip.id})`;
     sharedEl.style.clipPath = clipUrl;
     sharedEl.style.webkitClipPath = clipUrl;
     sharedEl.style.display = 'block';
+
+    // Idle rAF loop: keeps the blur updating at display refresh rate even when
+    // syncOverlays isn't being called (e.g. GIF playing with no user interaction).
+    // Cancelled & rescheduled each time syncOverlays runs so there's never two loops.
+    if (sharedEl._blurRaf) cancelAnimationFrame(sharedEl._blurRaf);
+    sharedEl._blurPx = blurPx;
+    const idleTick = () => {
+      const j = (performance.now() % 2) * 0.00005;
+      const px = sharedEl._blurPx || 12;
+      const v = `blur(${px + j}px)`;
+      sharedEl.style.backdropFilter = v;
+      sharedEl.style.webkitBackdropFilter = v;
+      sharedEl._blurRaf = requestAnimationFrame(idleTick);
+    };
+    sharedEl._blurRaf = requestAnimationFrame(idleTick);
   }, []);
 
   // Cleanup overlay elements on unmount
@@ -260,6 +269,7 @@ export default function App() {
       overlayElsRef.current.clear();
       const sharedEl = sharedBlurElRef.current;
       if (sharedEl) {
+        if (sharedEl._blurRaf) cancelAnimationFrame(sharedEl._blurRaf);
         sharedEl.remove();
         sharedBlurElRef.current = null;
       }
