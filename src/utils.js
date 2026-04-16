@@ -204,6 +204,9 @@ export function migrateItems(items) {
     if (item.type === "connector" && out.orientation === undefined) {
       out = { ...out, elbowX: out.elbowX ?? ((out.x1 + out.x2) / 2), elbowY: out.elbowY ?? ((out.y1 + out.y2) / 2), orientation: "h" };
     }
+    if ((item.type === "shape" || item.type === "text" || item.type === "link") && out.noiseEnabled === undefined) {
+      out = { ...out, noiseEnabled: false, noiseOpacity: out.noiseOpacity ?? 0.2 };
+    }
     // Sanitize NaN elbow coords (can happen from previous bugs)
     if (item.type === "connector") {
       if (!Number.isFinite(out.elbowX)) out = { ...out, elbowX: ((out.x1 ?? 0) + (out.x2 ?? 0)) / 2 };

@@ -620,7 +620,7 @@ export default function App() {
     const c = viewCenter();
     const item = { id: uid(), type: "text", x: snap(c.x - 104, true), y: snap(c.y - 24, true), w: 208, h: 48, z: maxZ(items) + 1, rotation: 0,
       text: "Dolor ipsum per existentiam manet, sed creatio vulneribus insanabilibus medetur.", placeholder: true, fontSize: 24, fontFamily: FONTS[0].value,
-      color: "#C2C0B6", bgColor: "transparent", radius: 0, bold: false, italic: false, align: "left" };
+      color: "#C2C0B6", bgColor: "transparent", radius: 0, bold: false, italic: false, align: "left", noiseEnabled: false, noiseOpacity: 0.2 };
     setItemsAndSave(p => [...p, item]); setSelectedIds([item.id]);
   };
 
@@ -628,14 +628,14 @@ export default function App() {
     const c = viewCenter();
     const item = { id: uid(), type: "link", x: snap(c.x - 80, true), y: snap(c.y - 24, true), w: 160, h: 48, z: maxZ(items) + 1, rotation: 0,
       text: "Click me", url: "https://", fontSize: 15, fontFamily: FONTS[0].value,
-      color: "#141413", bgColor: "#2C84DB", radius: 8, bold: true, italic: false, align: "center" };
+      color: "#141413", bgColor: "#2C84DB", radius: 8, bold: true, italic: false, align: "center", noiseEnabled: false, noiseOpacity: 0.2 };
     setItemsAndSave(p => [...p, item]); setSelectedIds([item.id]);
   };
 
   const addShape = (preset) => {
     const c = viewCenter();
     const item = { id: uid(), type: "shape", x: snap(c.x - preset.w / 2, true), y: snap(c.y - preset.h / 2, true),
-      w: preset.w, h: preset.h, z: maxZ(items) + 1, rotation: 0, bgColor: "#262624", radius: preset.radius ?? 4, borderColor: "transparent", borderWidth: 0 };
+      w: preset.w, h: preset.h, z: maxZ(items) + 1, rotation: 0, bgColor: "#262624", radius: preset.radius ?? 4, borderColor: "transparent", borderWidth: 0, noiseEnabled: false, noiseOpacity: 0.2 };
     setItemsAndSave(p => [...p, item]); setSelectedIds([item.id]);
   };
 
