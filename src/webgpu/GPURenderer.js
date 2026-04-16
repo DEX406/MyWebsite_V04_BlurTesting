@@ -15,7 +15,9 @@ function hexToRgba(hex, alpha = 1) {
   return [...hexToRgb(hex), alpha];
 }
 
-export const SUPERSAMPLE = 2;
+const IS_IOS = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+  (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+export const SUPERSAMPLE = IS_IOS ? 1 : 2;
 const MAX_QUAD_DRAWS = 1024;
 const MAX_LINE_DRAWS = 512;
 const MAX_CIRCLE_DRAWS = 1024;
@@ -303,14 +305,14 @@ export class GPURenderer {
     this._currentSorted = sorted; // available to _findMediaBehind
     const blurItems = sorted.filter(i => i.bgBlur && i.type !== 'connector');
 
-    const blurMeta = new Map(); // itemId → { blurW, blurH, idx }
+    const blurMeta = new Map(); // itemId → { item, blurW, blurH, idx }
     let blurIdx = 0;
     for (const item of blurItems) {
       if (item.w <= 0 || item.h <= 0) continue;
       const blurW = Math.max(2, Math.ceil(item.w * GLASS_DOWNSAMPLE));
       const blurH = Math.max(2, Math.ceil(item.h * GLASS_DOWNSAMPLE));
       this._getOrCreateBlurTexture(item.id, blurW, blurH);
-      blurMeta.set(item.id, { blurW, blurH, idx: blurIdx++ });
+      blurMeta.set(item.id, { item, blurW, blurH, idx: blurIdx++ });
     }
     const activeBlurIds = new Set(blurItems.map(i => i.id));
     this._cleanupBlurTextures(activeBlurIds);
@@ -476,8 +478,8 @@ export class GPURenderer {
     // Blur/blit uniforms: packed [blit, H-dir, V-dir] triples per blur element
     if (blurIdx > 0) {
       const blurDirBuf = new ArrayBuffer(A * blurIdx * 3);
-      for (const [itemId, meta] of blurMeta) {
-        const item = blurItems.find(i => i.id === itemId);
+      for (const [, meta] of blurMeta) {
+        const { item } = meta;
         // Slot 0: blit srcRect (UV coordinates in canvas texture)
         const blit = new Float32Array(blurDirBuf, A * (meta.idx * 3), 4);
         blit[0] = (item.x * zoomDpr + panDpr) / canvasW;  // srcOrigin.x
@@ -504,7 +506,7 @@ export class GPURenderer {
     }
     const textureView = canvasTexture.createView();
     // Canvas bind group for blit sampling (created once per frame, reused across blur elements)
-    const canvasSampleBG = blurIdx > 0 ? this._getTexBindGroup(canvasTexture.createView(), this.texCache.linearSampler) : null;
+    const canvasSampleBG = blurIdx > 0 ? this._getTexBindGroup(textureView, this.texCache.linearSampler) : null;
 
     const encoder = device.createCommandEncoder();
     let pass = encoder.beginRenderPass({
@@ -557,7 +559,7 @@ export class GPURenderer {
             blitP.draw(6);
             blitP.end();
 
-            // 4-pass Gaussian blur (H→int, V→tex, H→int, V→tex)
+            // 2-pass Gaussian blur (H→int, V→tex)
             const texBgA = this._getTexBindGroup(blurTex.view, this.texCache.linearSampler);
             const texBgB = this._getTexBindGroup(blurTex.intView, this.texCache.linearSampler);
             const hOff = blitOff + A;
@@ -576,8 +578,6 @@ export class GPURenderer {
               p.end();
             };
 
-            bp(blurTex.intView, texBgA, hOff);  // H: tex→int
-            bp(blurTex.view, texBgB, vOff);     // V: int→tex
             bp(blurTex.intView, texBgA, hOff);  // H: tex→int
             bp(blurTex.view, texBgB, vOff);     // V: int→tex
           }
