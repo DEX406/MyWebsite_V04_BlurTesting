@@ -186,10 +186,10 @@ fn fs_main(in: QuadVsOutput) -> @location(0) vec4<f32> {
   var uv = u.tex_crop.xy + (item_local / u.item_size) * u.tex_crop.zw;
   uv = clamp(uv, vec2<f32>(0.0), vec2<f32>(1.0));
   let tex_sample = textureSample(t_tex, s_tex, uv);
-  // Anchor noise in canvas/world space so 1 noise texel == 1 world px at zoom 100%.
-  // This keeps grain "stuck" to the canvas content instead of the screen.
+  // Anchor noise in canvas/world space (shared texture path), and scale it 4× denser
+  // so it reaches 1:1 perceived sharpness at ~4× zoom.
   let world_px = (in.pos.xy - u.pan) / u.zoom;
-  let noise_uv = world_px / 512.0;
+  let noise_uv = (world_px * 4.0) / 512.0;
   let noise_sample = textureSample(t_noise, s_noise, noise_uv);
 
   // ── Selection outline ──
