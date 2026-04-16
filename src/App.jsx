@@ -93,6 +93,17 @@ export default function App() {
   // ── Blur overlay (single shared CSS backdrop-filter div behind canvas) ──
   const sharedBlurElRef = useRef(null); // one DOM div to avoid blur stacking
   const sharedBlurClipRef = useRef(null); // { svg, clipPath, id }
+  const refreshGpuBlurRef = useRef(true);
+
+  useEffect(() => {
+    const prev = vp.onSettledRef.current;
+    vp.onSettledRef.current = () => {
+      if (typeof prev === 'function') prev();
+      refreshGpuBlurRef.current = true;
+      drawBgRef.current?.();
+    };
+    return () => { vp.onSettledRef.current = prev || null; };
+  }, [vp.onSettledRef, drawBgRef]);
 
   const syncOverlays = useCallback((overlays, panX, panY, zoom) => {
     const container = overlayRef.current;
@@ -288,6 +299,7 @@ export default function App() {
       const panX = vp.panRef.current.x;
       const panY = vp.panRef.current.y;
       const zoom = vp.zoomRef.current;
+      const refreshGpuBlur = refreshGpuBlurRef.current && !vp.interactingRef.current;
       const overlays = webgl.renderSync({
         items: renderItems,
         panX, panY, zoom,
@@ -295,7 +307,9 @@ export default function App() {
         globalShadow: globalShadowRef.current,
         selectedIds: selectedIdsRef.current,
         editingTextId: editingTextIdRef.current,
+        refreshGpuBlur,
       });
+      if (refreshGpuBlur) refreshGpuBlurRef.current = false;
       syncOverlays(overlays, panX, panY, zoom);
     };
     drawBgRef.current();
@@ -303,6 +317,7 @@ export default function App() {
 
   // Re-render when state changes that affect WebGL output
   useEffect(() => {
+    refreshGpuBlurRef.current = true;
     if (drawBgRef.current) drawBgRef.current();
   }, [bgGrid, items, selectedIds, globalShadow, editingTextId]);
 
@@ -320,7 +335,10 @@ export default function App() {
   useEffect(() => {
     const el = canvasRef.current;
     if (!el) return;
-    const ro = new ResizeObserver(() => { if (drawBgRef.current) drawBgRef.current(); });
+    const ro = new ResizeObserver(() => {
+      refreshGpuBlurRef.current = true;
+      if (drawBgRef.current) drawBgRef.current();
+    });
     ro.observe(el);
     return () => ro.disconnect();
   }, []);

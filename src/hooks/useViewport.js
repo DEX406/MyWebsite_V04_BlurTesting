@@ -162,6 +162,7 @@ export function useViewport() {
 
   return {
     panRef, zoomRef, isPanningRef, panStartRef, homeViewRef,
+    interactingRef,
     canvasRef, canvasHandlesRef, drawBgRef,
     posDisplayRef, zoomDisplayRef,
     applyTransform, updateDisplays, viewCenter, zoomTo, animateTo, goHome, setHome,
