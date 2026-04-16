@@ -1,7 +1,7 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from "react";
 import { ZoomInIcon, ZoomOutIcon, GridIcon, HomeIcon, FloppyIcon, UndoIcon, RedoIcon, CopyIcon, PasteIcon, TrashIcon, GroupIcon, UngroupIcon, BringFrontIcon, SendBackIcon } from './icons.jsx';
 
-import { FONT, FONTS, DEFAULT_BG_GRID, GLASS_DOWNSAMPLE } from './constants.js';
+import { FONT, FONTS, DEFAULT_BG_GRID } from './constants.js';
 import { loadConfiguredFonts } from './fontLibrary.js';
 import { uid, snap, isTyping, pasteItems, migrateItems, applyDragDelta, isGifSrc, isItemFlashEnabled } from './utils.js';
 import { createBackupZip, restoreFromZip } from './backupRestore.js';
@@ -13,7 +13,6 @@ import { ColorPickerPopup } from './components/ColorPickerPopup.jsx';
 import { LoginModal } from './components/LoginModal.jsx';
 import { loadBoard, saveBoard, cleanupFiles, uploadImage, uploadVideo, login, logout, hasToken, getBackupManifest, restoreImageKey, downloadImageViaProxy, serverResize } from './api.js';
 import { convertVideoToWebm, isVideoFile } from './videoUtils.js';
-import { SUPERSAMPLE } from './webgpu/GPURenderer.js';
 import { useViewport } from './hooks/useViewport.js';
 import { useKeyboard } from './hooks/useKeyboard.js';
 import { usePointerInput } from './hooks/usePointerInput.js';
@@ -144,16 +143,13 @@ export default function App() {
       const screenY = o.y * zoom + panY;
       const screenW = o.w * zoom;
       const screenH = o.h * zoom;
-      const ss = 1;
-      const invSS = 1 / ss;
-      el.style.left = (screenX - screenW * (ss - 1) * 0.5) + 'px';
-      el.style.top = (screenY - screenH * (ss - 1) * 0.5) + 'px';
-      el.style.width = (screenW * ss) + 'px';
-      el.style.height = (screenH * ss) + 'px';
+      el.style.left = screenX + 'px';
+      el.style.top = screenY + 'px';
+      el.style.width = screenW + 'px';
+      el.style.height = screenH + 'px';
       el.style.zIndex = o.z;
-      el.style.borderRadius = (o.radius * zoom * ss) + 'px';
-      const rot = o.rotation ? ` rotate(${o.rotation}deg)` : '';
-      el.style.transform = `scale(${invSS})${rot}`;
+      el.style.borderRadius = (o.radius * zoom) + 'px';
+      el.style.transform = o.rotation ? `rotate(${o.rotation}deg)` : '';
       el.style.transformOrigin = 'center center';
     }
 
@@ -165,7 +161,6 @@ export default function App() {
 
     if (!blurCount) {
       if (sharedEl) {
-        if (sharedEl._blurRaf) cancelAnimationFrame(sharedEl._blurRaf);
         sharedEl.remove();
         sharedBlurElRef.current = null;
       }
@@ -179,18 +174,18 @@ export default function App() {
 
     if (!sharedEl) {
       sharedEl = document.createElement('div');
-      sharedEl.style.cssText = 'position:absolute;top:0;left:0;right:0;bottom:0;pointer-events:none;';
+      // CSS animation forces continuous compositor updates for backdrop-filter
+      // without a JS rAF loop (which fights the main render loop on iOS).
+      sharedEl.style.cssText = 'position:absolute;top:0;left:0;right:0;bottom:0;pointer-events:none;will-change:backdrop-filter;';
+      if (!document.getElementById('_bf')) {
+        const s = document.createElement('style');
+        s.id = '_bf';
+        s.textContent = '@keyframes _bf{0%{opacity:1}50%{opacity:.999}100%{opacity:1}}';
+        document.head.appendChild(s);
+      }
+      sharedEl.style.animation = '_bf .5s steps(2) infinite';
       container.appendChild(sharedEl);
       sharedBlurElRef.current = sharedEl;
-      // rAF loop forces browser to re-composite backdrop-filter every frame,
-      // keeping the blur live over animated GIFs and videos.
-      let tick = false;
-      const repaint = () => {
-        sharedEl.style.opacity = tick ? '1' : '0.999';
-        tick = !tick;
-        sharedEl._blurRaf = requestAnimationFrame(repaint);
-      };
-      sharedEl._blurRaf = requestAnimationFrame(repaint);
     }
 
     let clip = sharedBlurClipRef.current;
@@ -216,19 +211,21 @@ export default function App() {
     // Shared blur intensity for the single blur layer.
     // The canvas matte cutouts determine where this shared layer is visible.
     const blurRadius = blurVideoOverlays[0]?.blurRadius || 8;
-    // Keep blur radius in canvas/world units so visual blur scales with zoom.
-    const blurPx = blurRadius * zoom * SUPERSAMPLE * Math.max(0.1, GLASS_DOWNSAMPLE);
+    // CSS blur in screen pixels — independent of SUPERSAMPLE and GLASS_DOWNSAMPLE.
+    const blurPx = blurRadius * zoom;
     const topZ = blurVideoOverlays.reduce((m, o) => Math.max(m, o.z || 0), 0);
-    while (clip.clipPath.firstChild) clip.clipPath.removeChild(clip.clipPath.firstChild);
-    for (const o of blurVideoOverlays) {
-      const ns = 'http://www.w3.org/2000/svg';
-      const rect = document.createElementNS(ns, 'rect');
+    // Reuse existing SVG <rect> elements — avoids DOM create/destroy churn per frame.
+    const rects = clip.clipPath.children;
+    while (rects.length > blurVideoOverlays.length) clip.clipPath.removeChild(clip.clipPath.lastChild);
+    const ns = 'http://www.w3.org/2000/svg';
+    for (let i = 0; i < blurVideoOverlays.length; i++) {
+      const o = blurVideoOverlays[i];
+      let rect = rects[i];
+      if (!rect) { rect = document.createElementNS(ns, 'rect'); clip.clipPath.appendChild(rect); }
       const x = o.x * zoom + panX;
       const y = o.y * zoom + panY;
       const w = o.w * zoom;
       const h = o.h * zoom;
-      const cx = x + w * 0.5;
-      const cy = y + h * 0.5;
       const r = Math.max(0, Math.min(o.radius * zoom, w * 0.5, h * 0.5));
       rect.setAttribute('x', String(x));
       rect.setAttribute('y', String(y));
@@ -236,8 +233,10 @@ export default function App() {
       rect.setAttribute('height', String(h));
       rect.setAttribute('rx', String(r));
       rect.setAttribute('ry', String(r));
+      const cx = x + w * 0.5;
+      const cy = y + h * 0.5;
       if (o.rotation) rect.setAttribute('transform', `rotate(${o.rotation} ${cx} ${cy})`);
-      clip.clipPath.appendChild(rect);
+      else rect.removeAttribute('transform');
     }
 
     sharedEl.style.zIndex = String(topZ);
@@ -259,7 +258,6 @@ export default function App() {
       overlayElsRef.current.clear();
       const sharedEl = sharedBlurElRef.current;
       if (sharedEl) {
-        if (sharedEl._blurRaf) cancelAnimationFrame(sharedEl._blurRaf);
         sharedEl.remove();
         sharedBlurElRef.current = null;
       }

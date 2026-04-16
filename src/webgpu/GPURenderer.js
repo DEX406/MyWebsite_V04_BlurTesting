@@ -15,12 +15,17 @@ function hexToRgba(hex, alpha = 1) {
   return [...hexToRgb(hex), alpha];
 }
 
-export const SUPERSAMPLE = 2;
+// Mobile GPUs (tile-based deferred) choke on SUPERSAMPLE>1 at high DPR.
+// iPhone DPR 3 × SS 2 = 6× resolution (11.8 MP). SS 1 still renders at native DPR.
+const _LOW_POWER = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+export const SUPERSAMPLE = _LOW_POWER ? 1 : 2;
 const MAX_QUAD_DRAWS = 1024;
 const MAX_LINE_DRAWS = 512;
 const MAX_CIRCLE_DRAWS = 1024;
 const MAX_BLUR_ITEMS = 32;
-const BLUR_STEP = 1; // pixel spacing between Gaussian blur taps
+// √2 compensates for the single H+V blur pass (was 1.0 with double H+V).
+// Two iterations compound σ as √(σ₁²+σ₂²)=σ√2; one pass at step √2 matches.
+const BLUR_STEP = Math.SQRT2;
 const NOISE_MAP_SIZE = 512;
 
 export class GPURenderer {
@@ -182,6 +187,17 @@ export class GPURenderer {
     // Blur/blit uniform buffer: packed [blit, H-dir, V-dir] triples for up to MAX_BLUR_ITEMS elements
     this._blurDirUniformBuf = device.createBuffer({ size: A * MAX_BLUR_ITEMS * 3, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
     this._blurDirBindGroup = device.createBindGroup({ layout: this._blurBGL0, entries: [{ binding: 0, resource: { buffer: this._blurDirUniformBuf, size: BLUR_UNIFORM_SIZE } }] });
+
+    // Pre-allocated CPU-side staging buffers — written into each frame, uploaded once.
+    // Eliminates per-frame ArrayBuffer + Uint8Array allocations (iOS GC pressure).
+    this._quadStaging = new ArrayBuffer(A * MAX_QUAD_DRAWS);
+    this._quadStagingBytes = new Uint8Array(this._quadStaging);
+    this._lineStaging = new ArrayBuffer(A * MAX_LINE_DRAWS);
+    this._lineStagingBytes = new Uint8Array(this._lineStaging);
+    this._circleStaging = new ArrayBuffer(A * MAX_CIRCLE_DRAWS);
+    this._circleStagingBytes = new Uint8Array(this._circleStaging);
+    this._blurDirStaging = new ArrayBuffer(A * MAX_BLUR_ITEMS * 3);
+    this._blurDirStagingBytes = new Uint8Array(this._blurDirStaging);
   }
 
   _createStaticVB(data) {
@@ -303,14 +319,14 @@ export class GPURenderer {
     this._currentSorted = sorted; // available to _findMediaBehind
     const blurItems = sorted.filter(i => i.bgBlur && i.type !== 'connector');
 
-    const blurMeta = new Map(); // itemId → { blurW, blurH, idx }
+    const blurMeta = new Map(); // itemId → { blurW, blurH, idx, item }
     let blurIdx = 0;
     for (const item of blurItems) {
       if (item.w <= 0 || item.h <= 0) continue;
       const blurW = Math.max(2, Math.ceil(item.w * GLASS_DOWNSAMPLE));
       const blurH = Math.max(2, Math.ceil(item.h * GLASS_DOWNSAMPLE));
       this._getOrCreateBlurTexture(item.id, blurW, blurH);
-      blurMeta.set(item.id, { blurW, blurH, idx: blurIdx++ });
+      blurMeta.set(item.id, { blurW, blurH, idx: blurIdx++, item });
     }
     const activeBlurIds = new Set(blurItems.map(i => i.id));
     this._cleanupBlurTextures(activeBlurIds);
@@ -427,71 +443,70 @@ export class GPURenderer {
     }
     device.queue.writeBuffer(this.gridUniformBuf, 0, gridData);
 
-    // Quad uniforms (packed into aligned slots)
+    // Quad uniforms — write into pre-allocated staging (no per-frame ArrayBuffer)
     if (allQuads.length > 0) {
-      const quadBuf = new ArrayBuffer(A * allQuads.length);
       for (let i = 0; i < allQuads.length; i++) {
-        new Float32Array(quadBuf, A * i, 44).set(allQuads[i].uniforms);
+        new Float32Array(this._quadStaging, A * i, 44).set(allQuads[i].uniforms);
       }
-      device.queue.writeBuffer(this.quadUniformBuf, 0, new Uint8Array(quadBuf));
+      device.queue.writeBuffer(this.quadUniformBuf, 0, this._quadStagingBytes, 0, A * allQuads.length);
     }
 
     // Line uniforms
     if (allLines.length > 0) {
-      const lineBuf = new ArrayBuffer(A * allLines.length);
       for (let i = 0; i < allLines.length; i++) {
-        new Float32Array(lineBuf, A * i, 12).set(allLines[i].uniforms);
+        new Float32Array(this._lineStaging, A * i, 12).set(allLines[i].uniforms);
       }
-      device.queue.writeBuffer(this.lineUniformBuf, 0, new Uint8Array(lineBuf));
+      device.queue.writeBuffer(this.lineUniformBuf, 0, this._lineStagingBytes, 0, A * allLines.length);
 
       // Concatenate all line vertices
       let totalVerts = 0;
       for (const d of allLines) totalVerts += d.verts.length;
-      const allVerts = new Float32Array(totalVerts);
+      if (!this._lineVertStaging || this._lineVertStaging.length < totalVerts) {
+        this._lineVertStaging = new Float32Array(totalVerts * 2);
+      }
       let offset = 0;
       for (const d of allLines) {
-        allVerts.set(d.verts, offset);
-        d._vertOffset = offset / 2; // in vertices
+        this._lineVertStaging.set(d.verts, offset);
+        d._vertOffset = offset / 2;
         d._vertCount = d.verts.length / 2;
         offset += d.verts.length;
       }
-      const neededBytes = allVerts.byteLength;
+      const neededBytes = totalVerts * 4;
       if (neededBytes > this.lineVertBufSize) {
         this.lineVertBuf.destroy();
         this.lineVertBufSize = neededBytes * 2;
         this.lineVertBuf = device.createBuffer({ size: this.lineVertBufSize, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST });
       }
-      device.queue.writeBuffer(this.lineVertBuf, 0, allVerts);
+      device.queue.writeBuffer(this.lineVertBuf, 0, this._lineVertStaging, 0, totalVerts);
     }
 
     // Circle uniforms
     if (allCircles.length > 0) {
-      const circleBuf = new ArrayBuffer(A * allCircles.length);
       for (let i = 0; i < allCircles.length; i++) {
-        new Float32Array(circleBuf, A * i, 12).set(allCircles[i].uniforms);
+        new Float32Array(this._circleStaging, A * i, 12).set(allCircles[i].uniforms);
       }
-      device.queue.writeBuffer(this.circleUniformBuf, 0, new Uint8Array(circleBuf));
+      device.queue.writeBuffer(this.circleUniformBuf, 0, this._circleStagingBytes, 0, A * allCircles.length);
     }
 
-    // Blur/blit uniforms: packed [blit, H-dir, V-dir] triples per blur element
+    // Blur/blit uniforms — write into pre-allocated staging
     if (blurIdx > 0) {
-      const blurDirBuf = new ArrayBuffer(A * blurIdx * 3);
-      for (const [itemId, meta] of blurMeta) {
-        const item = blurItems.find(i => i.id === itemId);
+      // Zero the staging region (previous frame's data may linger in direction slots)
+      new Uint8Array(this._blurDirStaging, 0, A * blurIdx * 3).fill(0);
+      for (const [, meta] of blurMeta) {
+        const item = meta.item;
+        const base = A * meta.idx * 3;
         // Slot 0: blit srcRect (UV coordinates in canvas texture)
-        const blit = new Float32Array(blurDirBuf, A * (meta.idx * 3), 4);
-        blit[0] = (item.x * zoomDpr + panDpr) / canvasW;  // srcOrigin.x
-        blit[1] = (item.y * zoomDpr + panDprY) / canvasH; // srcOrigin.y
-        blit[2] = item.w * zoomDpr / canvasW;              // srcSize.x
-        blit[3] = item.h * zoomDpr / canvasH;              // srcSize.y
+        const blit = new Float32Array(this._blurDirStaging, base, 4);
+        blit[0] = (item.x * zoomDpr + panDpr) / canvasW;
+        blit[1] = (item.y * zoomDpr + panDprY) / canvasH;
+        blit[2] = item.w * zoomDpr / canvasW;
+        blit[3] = item.h * zoomDpr / canvasH;
         // Slot 1: H blur direction
-        const hDir = new Float32Array(blurDirBuf, A * (meta.idx * 3 + 1), 4);
-        hDir[0] = (BLUR_STEP * GLASS_DOWNSAMPLE) / meta.blurW;
+        new Float32Array(this._blurDirStaging, base + A, 4)[0] = (BLUR_STEP * GLASS_DOWNSAMPLE) / meta.blurW;
         // Slot 2: V blur direction
-        const vDir = new Float32Array(blurDirBuf, A * (meta.idx * 3 + 2), 4);
-        vDir[1] = (BLUR_STEP * GLASS_DOWNSAMPLE) / meta.blurH;
+        new Float32Array(this._blurDirStaging, base + A * 2, 4)[1] = (BLUR_STEP * GLASS_DOWNSAMPLE) / meta.blurH;
       }
-      device.queue.writeBuffer(this._blurDirUniformBuf, 0, new Uint8Array(blurDirBuf));
+      device.queue.writeBuffer(this._blurDirUniformBuf, 0, this._blurDirStagingBytes, 0, A * blurIdx * 3);
     }
 
     // ── Phase 3: Build and submit command buffer ──
@@ -503,8 +518,9 @@ export class GPURenderer {
       return; // context lost or canvas zero-size
     }
     const textureView = canvasTexture.createView();
-    // Canvas bind group for blit sampling (created once per frame, reused across blur elements)
-    const canvasSampleBG = blurIdx > 0 ? this._getTexBindGroup(canvasTexture.createView(), this.texCache.linearSampler) : null;
+    // Reuse the same view for both render-attachment and blit-sampling (valid when
+    // they never overlap in the same pass). Avoids a second createView() + WeakMap miss.
+    const canvasSampleBG = blurIdx > 0 ? this._getTexBindGroup(textureView, this.texCache.linearSampler) : null;
 
     const encoder = device.createCommandEncoder();
     let pass = encoder.beginRenderPass({
@@ -557,7 +573,7 @@ export class GPURenderer {
             blitP.draw(6);
             blitP.end();
 
-            // 4-pass Gaussian blur (H→int, V→tex, H→int, V→tex)
+            // 2-pass separable Gaussian blur (H→int, V→tex)
             const texBgA = this._getTexBindGroup(blurTex.view, this.texCache.linearSampler);
             const texBgB = this._getTexBindGroup(blurTex.intView, this.texCache.linearSampler);
             const hOff = blitOff + A;
@@ -576,8 +592,8 @@ export class GPURenderer {
               p.end();
             };
 
-            bp(blurTex.intView, texBgA, hOff);  // H: tex→int
-            bp(blurTex.view, texBgB, vOff);     // V: int→tex
+            // Single H+V pass (BLUR_STEP=√2 compensates for removed 2nd iteration).
+            // Each render-pass boundary flushes iOS tile memory — 2 passes not 4.
             bp(blurTex.intView, texBgA, hOff);  // H: tex→int
             bp(blurTex.view, texBgB, vOff);     // V: int→tex
           }
