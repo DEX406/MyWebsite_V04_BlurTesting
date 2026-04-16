@@ -27,7 +27,7 @@ export class PillRenderer {
   }
 
   _render(text) {
-    const scale = 2; // 2× for sharp text
+    const scale = 4; // 2× for sharp text
     const ctx = this.ctx;
     const fontSize = 10;
     const padX = 10;
