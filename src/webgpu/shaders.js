@@ -4,8 +4,8 @@
 //
 // Uniform buffer byte sizes (for JS-side allocation):
 export const GRID_UNIFORM_SIZE = 128;
-export const QUAD_UNIFORM_SIZE = 160;
-export const MATTE_UNIFORM_SIZE = 160; // same layout as quad
+export const QUAD_UNIFORM_SIZE = 176;
+export const MATTE_UNIFORM_SIZE = 176; // same layout as quad
 export const LINE_UNIFORM_SIZE = 48;
 export const CIRCLE_UNIFORM_SIZE = 48;
 
@@ -89,7 +89,7 @@ fn fs_main(@builtin(position) frag_pos: vec4<f32>) -> @location(0) vec4<f32> {
 
 // ── Quad shader ────────────────────────────────────────────────────────────────
 // Renders images, shapes, text, links, shadows, borders, selection outlines.
-// Uniform layout (160 bytes / 40 floats):
+// Uniform layout (176 bytes / 44 floats):
 //   [0]  resolution.x [1]  resolution.y
 //   [2]  pan.x        [3]  pan.y
 //   [4]  zoom         [5]  rotation       [6]  radius       [7]  opacity
@@ -102,7 +102,8 @@ fn fs_main(@builtin(position) frag_pos: vec4<f32>) -> @location(0) vec4<f32> {
 //   [24] borderColor.r [25] borderColor.g [26] borderColor.b [27] borderColor.a
 //   [28] textColor.r  [29] textColor.g    [30] textColor.b  [31] textColor.a
 //   [32] borderWidth  [33] textured       [34] hasShadow    [35] shadowSize
-//   [36] shadowOpacity [37] isSelection   [38] textAlpha    [39] _pad
+//   [36] shadowOpacity [37] isSelection   [38] textAlpha    [39] noiseOpacity
+//   [40] noiseEnabled  [41-43] _pad
 
 export const QUAD_SHADER = `
 struct QuadUniforms {
@@ -127,7 +128,11 @@ struct QuadUniforms {
   shadow_opacity: f32,        // offset 144
   is_selection:   f32,        // offset 148
   text_alpha:     f32,        // offset 152
-  _pad:           f32,        // offset 156
+  noise_opacity:  f32,        // offset 156
+  noise_enabled:  f32,        // offset 160
+  _p0:            f32,        // offset 164
+  _p1:            f32,        // offset 168
+  _p2:            f32,        // offset 172
 };
 
 struct QuadVsOutput {
@@ -139,6 +144,8 @@ struct QuadVsOutput {
 @group(0) @binding(0) var<uniform> u: QuadUniforms;
 @group(1) @binding(0) var t_tex: texture_2d<f32>;
 @group(1) @binding(1) var s_tex: sampler;
+@group(1) @binding(2) var t_noise: texture_2d<f32>;
+@group(1) @binding(3) var s_noise: sampler;
 
 @vertex
 fn vs_main(@location(0) a_pos: vec2<f32>) -> QuadVsOutput {
@@ -179,6 +186,11 @@ fn fs_main(in: QuadVsOutput) -> @location(0) vec4<f32> {
   var uv = u.tex_crop.xy + (item_local / u.item_size) * u.tex_crop.zw;
   uv = clamp(uv, vec2<f32>(0.0), vec2<f32>(1.0));
   let tex_sample = textureSample(t_tex, s_tex, uv);
+  // Anchor noise in canvas/world space (shared texture path), and scale it 4× denser
+  // so it reaches 1:1 perceived sharpness at ~4× zoom.
+  let world_px = (in.pos.xy - u.pan) / u.zoom;
+  let noise_uv = (world_px * 4.0) / 512.0;
+  let noise_sample = textureSample(t_noise, s_noise, noise_uv);
 
   // ── Selection outline ──
   if (u.is_selection > 0.5) {
@@ -217,6 +229,11 @@ fn fs_main(in: QuadVsOutput) -> @location(0) vec4<f32> {
     col = tex_sample;
   } else {
     col = u.color;
+  }
+
+  if (u.noise_enabled > 0.5 && u.noise_opacity > 0.0) {
+    let n_alpha = noise_sample.r * u.noise_opacity;
+    col = vec4<f32>(mix(col.rgb, noise_sample.rgb, n_alpha), col.a);
   }
 
   return vec4<f32>(col.rgb, col.a * aa * u.opacity);
