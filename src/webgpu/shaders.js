@@ -186,6 +186,8 @@ fn fs_main(in: QuadVsOutput) -> @location(0) vec4<f32> {
   var uv = u.tex_crop.xy + (item_local / u.item_size) * u.tex_crop.zw;
   uv = clamp(uv, vec2<f32>(0.0), vec2<f32>(1.0));
   let tex_sample = textureSample(t_tex, s_tex, uv);
+  let noise_uv = in.pos.xy / 512.0;
+  let noise_sample = textureSample(t_noise, s_noise, noise_uv);
 
   // ── Selection outline ──
   if (u.is_selection > 0.5) {
@@ -227,10 +229,8 @@ fn fs_main(in: QuadVsOutput) -> @location(0) vec4<f32> {
   }
 
   if (u.noise_enabled > 0.5 && u.noise_opacity > 0.0) {
-    let noise_uv = in.pos.xy / 512.0;
-    let n = textureSample(t_noise, s_noise, noise_uv);
-    let n_alpha = n.r * u.noise_opacity;
-    col = vec4<f32>(mix(col.rgb, n.rgb, n_alpha), col.a);
+    let n_alpha = noise_sample.r * u.noise_opacity;
+    col = vec4<f32>(mix(col.rgb, noise_sample.rgb, n_alpha), col.a);
   }
 
   return vec4<f32>(col.rgb, col.a * aa * u.opacity);
