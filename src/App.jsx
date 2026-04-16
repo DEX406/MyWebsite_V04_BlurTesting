@@ -1,7 +1,7 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from "react";
 import { ZoomInIcon, ZoomOutIcon, GridIcon, HomeIcon, FloppyIcon, UndoIcon, RedoIcon, CopyIcon, PasteIcon, TrashIcon, GroupIcon, UngroupIcon, BringFrontIcon, SendBackIcon } from './icons.jsx';
 
-import { FONT, FONTS, DEFAULT_BG_GRID, GLASS_DOWNSAMPLE } from './constants.js';
+import { FONT, FONTS, DEFAULT_BG_GRID } from './constants.js';
 import { loadConfiguredFonts } from './fontLibrary.js';
 import { uid, snap, isTyping, pasteItems, migrateItems, applyDragDelta, isGifSrc, isItemFlashEnabled } from './utils.js';
 import { createBackupZip, restoreFromZip } from './backupRestore.js';
@@ -13,7 +13,6 @@ import { ColorPickerPopup } from './components/ColorPickerPopup.jsx';
 import { LoginModal } from './components/LoginModal.jsx';
 import { loadBoard, saveBoard, cleanupFiles, uploadImage, uploadVideo, login, logout, hasToken, getBackupManifest, restoreImageKey, downloadImageViaProxy, serverResize } from './api.js';
 import { convertVideoToWebm, isVideoFile } from './videoUtils.js';
-import { SUPERSAMPLE } from './webgpu/GPURenderer.js';
 import { useViewport } from './hooks/useViewport.js';
 import { useKeyboard } from './hooks/useKeyboard.js';
 import { usePointerInput } from './hooks/usePointerInput.js';
@@ -144,16 +143,14 @@ export default function App() {
       const screenY = o.y * zoom + panY;
       const screenW = o.w * zoom;
       const screenH = o.h * zoom;
-      const ss = 1;
-      const invSS = 1 / ss;
-      el.style.left = (screenX - screenW * (ss - 1) * 0.5) + 'px';
-      el.style.top = (screenY - screenH * (ss - 1) * 0.5) + 'px';
-      el.style.width = (screenW * ss) + 'px';
-      el.style.height = (screenH * ss) + 'px';
+      el.style.left = screenX + 'px';
+      el.style.top = screenY + 'px';
+      el.style.width = screenW + 'px';
+      el.style.height = screenH + 'px';
       el.style.zIndex = o.z;
-      el.style.borderRadius = (o.radius * zoom * ss) + 'px';
+      el.style.borderRadius = (o.radius * zoom) + 'px';
       const rot = o.rotation ? ` rotate(${o.rotation}deg)` : '';
-      el.style.transform = `scale(${invSS})${rot}`;
+      el.style.transform = rot;
       el.style.transformOrigin = 'center center';
     }
 
@@ -217,7 +214,7 @@ export default function App() {
     // The canvas matte cutouts determine where this shared layer is visible.
     const blurRadius = blurVideoOverlays[0]?.blurRadius || 8;
     // Keep blur radius in canvas/world units so visual blur scales with zoom.
-    const blurPx = blurRadius * zoom * SUPERSAMPLE * Math.max(0.1, GLASS_DOWNSAMPLE);
+    const blurPx = blurRadius * zoom;
     const topZ = blurVideoOverlays.reduce((m, o) => Math.max(m, o.z || 0), 0);
     while (clip.clipPath.firstChild) clip.clipPath.removeChild(clip.clipPath.firstChild);
     for (const o of blurVideoOverlays) {
