@@ -3,7 +3,7 @@ import { ZoomInIcon, ZoomOutIcon, GridIcon, HomeIcon, FloppyIcon, UndoIcon, Redo
 
 import { FONT, FONTS, DEFAULT_BG_GRID } from './constants.js';
 import { loadConfiguredFonts } from './fontLibrary.js';
-import { uid, snap, isTyping, pasteItems, migrateItems, applyDragDelta, isGifSrc, isItemFlashEnabled } from './utils.js';
+import { uid, snap, isTyping, pasteItems, migrateItems, applyDragDelta, isGifSrc, isItemFlashEnabled, readLocal, writeLocal, maxZ, minZ } from './utils.js';
 import { createBackupZip, restoreFromZip } from './backupRestore.js';
 import { tbBtn, tbSurface, tbSep, togBtn, infoText, panelSurface, UI_BG, UI_BORDER, Z } from './styles.js';
 import { CanvasItem } from './components/CanvasItem.jsx';
@@ -36,10 +36,7 @@ export default function App() {
   const [uploadStatus, setUploadStatus] = useState("");
   const [snapOn, setSnapOn] = useState(false);
   const [shiftHeld, setShiftHeld] = useState(false);
-  const [globalShadow, setGlobalShadow] = useState(() => {
-    try { const s = localStorage.getItem("lutz-shadow-settings"); return s ? JSON.parse(s) : { enabled: true, size: 1.5, opacity: 0.1 }; }
-    catch { return { enabled: true, size: 1.5, opacity: 0.1 }; }
-  });
+  const [globalShadow, setGlobalShadow] = useState(() => readLocal("lutz-shadow-settings", { enabled: true, size: 1.5, opacity: 0.1 }));
   const [selectedIds, setSelectedIds] = useState([]);
   const [clipboard, setClipboard] = useState([]);
   const [palette, setPalette] = useState(DEFAULT_PALETTE);
@@ -54,8 +51,7 @@ export default function App() {
   const [editingConnector, setEditingConnector] = useState(null);
   const [multiSelectMode, setMultiSelectMode] = useState(false);
   const [propertiesCollapsed, setPropertiesCollapsed] = useState(() => {
-    try { return localStorage.getItem("lutz-properties-collapsed") === "1"; }
-    catch { return false; }
+    try { return localStorage.getItem("lutz-properties-collapsed") === "1"; } catch { return false; }
   });
 
   const fileInputRef = useRef(null);
@@ -347,7 +343,7 @@ export default function App() {
   }, []);
 
   // ── Persist settings ──
-  useEffect(() => { try { localStorage.setItem("lutz-shadow-settings", JSON.stringify(globalShadow)); } catch {} }, [globalShadow]);
+  useEffect(() => { writeLocal("lutz-shadow-settings", globalShadow); }, [globalShadow]);
   useEffect(() => { try { localStorage.setItem("lutz-properties-collapsed", propertiesCollapsed ? "1" : "0"); } catch {} }, [propertiesCollapsed]);
   // bgGrid and palette changes trigger a board save (defined after scheduleSave below)
 
@@ -393,7 +389,6 @@ export default function App() {
   const { setItemsWithUndo: setItemsAndSave, undo, redo, canUndo, canRedo, pushUndo } = useUndo(setItems, scheduleSave, isAdmin);
 
   // ── Item CRUD ──
-  const maxZ = (arr) => arr.length ? Math.max(...arr.map(i => i.z)) : 0;
   const updateItem = (id, updates) => setItemsAndSave(p => p.map(i => i.id === id ? { ...i, ...updates } : i));
   // Mipmap updater: displaySrc/placeholderSrc/targetSrc changes are silent (no save),
   // but srcQ50/srcQ25/srcQ12/srcQ6 trigger a save
@@ -416,20 +411,27 @@ export default function App() {
   const deleteItems = (ids) => { setItemsAndSave(p => p.filter(i => !ids.includes(i.id))); setSelectedIds(prev => prev.filter(id => !ids.includes(id))); };
   const groupSelected = () => { if (selectedIds.length < 2) return; const gid = uid(); setItemsAndSave(p => p.map(i => selectedIds.includes(i.id) ? { ...i, groupId: gid } : i)); };
   const ungroupSelected = () => setItemsAndSave(p => p.map(i => selectedIds.includes(i.id) ? { ...i, groupId: undefined } : i));
-  const bringToFront = () => setItemsAndSave(prev => {
-    const others = prev.filter(i => !selectedIds.includes(i.id));
-    const mZ = others.length ? Math.max(...others.map(i => i.z)) : 0;
-    const sel = prev.filter(i => selectedIds.includes(i.id)).sort((a, b) => a.z - b.z);
-    const zMap = Object.fromEntries(sel.map((item, idx) => [item.id, mZ + 1 + idx]));
-    return prev.map(i => selectedIds.includes(i.id) ? { ...i, z: zMap[i.id] } : i);
+  // Partition into selected vs other in a single pass, find boundary Z, then reassign.
+  const restack = (toFront) => setItemsAndSave(prev => {
+    const selSet = new Set(selectedIds);
+    const sel = [];
+    let boundary = null;
+    for (const i of prev) {
+      if (selSet.has(i.id)) sel.push(i);
+      else if (boundary === null) boundary = i.z;
+      else if (toFront ? i.z > boundary : i.z < boundary) boundary = i.z;
+    }
+    if (!sel.length) return prev;
+    sel.sort((a, b) => a.z - b.z);
+    const base = boundary ?? 0;
+    const zMap = new Map();
+    sel.forEach((item, idx) => {
+      zMap.set(item.id, toFront ? base + 1 + idx : base - sel.length + idx);
+    });
+    return prev.map(i => zMap.has(i.id) ? { ...i, z: zMap.get(i.id) } : i);
   });
-  const sendToBack = () => setItemsAndSave(prev => {
-    const others = prev.filter(i => !selectedIds.includes(i.id));
-    const mZ = others.length ? Math.min(...others.map(i => i.z)) : 0;
-    const sel = prev.filter(i => selectedIds.includes(i.id)).sort((a, b) => a.z - b.z);
-    const zMap = Object.fromEntries(sel.map((item, idx) => [item.id, mZ - sel.length + idx]));
-    return prev.map(i => selectedIds.includes(i.id) ? { ...i, z: zMap[i.id] } : i);
-  });
+  const bringToFront = () => restack(true);
+  const sendToBack = () => restack(false);
 
   const handleCopySelected = useCallback(() => {
     const toCopy = items.filter(i => selectedIds.includes(i.id));
@@ -477,9 +479,9 @@ export default function App() {
   });
 
   useKeyboard({
-    isAdmin, selectedIds, setSelectedIds, clipboard, setClipboard,
+    isAdmin, selectedIds, setSelectedIds, setClipboard,
     items, setItemsAndSave, editingTextId, setEditingTextId,
-    viewCenter, setShiftHeld, undo, redo,
+    setShiftHeld, undo, redo,
   });
 
   // ── Image upload (all conversion handled server-side) ──
@@ -603,8 +605,7 @@ export default function App() {
       if (boardClip.length === 0) return;
       e.preventDefault();
       const c = viewCenter();
-      const mZ = items.length ? Math.max(...items.map(i => i.z)) : 0;
-      const pasted = pasteItems(boardClip, c, mZ);
+      const pasted = pasteItems(boardClip, c, maxZ(items));
       setItemsAndSave(p => [...p, ...pasted]);
       setSelectedIds(pasted.map(i => i.id));
     };

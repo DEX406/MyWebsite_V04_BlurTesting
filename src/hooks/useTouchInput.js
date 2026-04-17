@@ -1,5 +1,6 @@
 import { useRef, useCallback, useEffect } from 'react';
 import { snap, snapAngle, computeResize, applyDragDelta, computeElbowOrientation } from '../utils.js';
+import { RAD_TO_DEG } from '../constants.js';
 import { MIN_ZOOM, MAX_ZOOM } from './useViewport.js';
 
 const TOUCH_TAP_THRESHOLD = 10;
@@ -146,7 +147,7 @@ export function useTouchInput({
             touchRef.current.gesture = "rotate";
             touchRef.current.rotateCenter = { x: centerX, y: centerY };
             touchRef.current.startAngle = item.rotation || 0;
-            touchRef.current.startMouseAngle = Math.atan2(touchRef.current.startY - centerY, touchRef.current.startX - centerX) * 180 / Math.PI;
+            touchRef.current.startMouseAngle = Math.atan2(touchRef.current.startY - centerY, touchRef.current.startX - centerX) * RAD_TO_DEG;
           } else if (action === "move-ep1" || action === "move-ep2" || action === "move-elbow") {
             setSelectedIds([itemId]);
             pushUndo(itemsRef.current);
@@ -210,7 +211,7 @@ export function useTouchInput({
         if (drawBgRef.current) drawBgRef.current();
       } else if (gesture === "rotate") {
         const { x: cx, y: cy } = touchRef.current.rotateCenter;
-        const mouseAngle = Math.atan2(t.clientY - cy, t.clientX - cx) * 180 / Math.PI;
+        const mouseAngle = Math.atan2(t.clientY - cy, t.clientX - cx) * RAD_TO_DEG;
         const deltaAngle = mouseAngle - touchRef.current.startMouseAngle;
         const newAngle = snapAngle(touchRef.current.startAngle + deltaAngle, es);
         const itemId = touchRef.current.itemId;
