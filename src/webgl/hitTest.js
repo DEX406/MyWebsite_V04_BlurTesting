@@ -1,7 +1,7 @@
 // Math-based hit testing: given a screen point, find which item (if any) is under it.
 // Replaces DOM-based `closest("[data-item-id]")`.
 
-import { buildConnectorPath } from '../connectorPath.js';
+import { DEG_TO_RAD } from '../constants.js';
 
 // Grab radius in screen pixels — constant regardless of zoom.
 const GRAB_PX = 16;
@@ -37,7 +37,7 @@ export function hitTest(screenX, screenY, items, panX, panY, zoom) {
 function hitRect(wx, wy, item, grab) {
   const cx = item.x + item.w / 2;
   const cy = item.y + item.h / 2;
-  const rad = -(item.rotation || 0) * Math.PI / 180;
+  const rad = -(item.rotation || 0) * DEG_TO_RAD;
   const cos = Math.cos(rad);
   const sin = Math.sin(rad);
 
@@ -74,23 +74,32 @@ function hitConnector(wx, wy, item, grab) {
     ];
   }
 
+  const grabSq = grab * grab;
   for (const [sx, sy, ex, ey] of segments) {
-    if (distToSegment(wx, wy, sx, sy, ex, ey) < grab) return true;
+    if (distToSegmentSq(wx, wy, sx, sy, ex, ey) < grabSq) return true;
   }
 
-  // Also check endpoint dots
-  if (Math.hypot(wx - x1, wy - y1) < grab) return true;
-  if (Math.hypot(wx - x2, wy - y2) < grab) return true;
+  // Endpoint dots (squared-distance compare avoids sqrt).
+  const d1x = wx - x1, d1y = wy - y1;
+  if (d1x * d1x + d1y * d1y < grabSq) return true;
+  const d2x = wx - x2, d2y = wy - y2;
+  if (d2x * d2x + d2y * d2y < grabSq) return true;
 
   return false;
 }
 
-// Distance from point (px, py) to line segment (ax, ay)-(bx, by)
-function distToSegment(px, py, ax, ay, bx, by) {
+// Squared distance from point (px, py) to line segment (ax, ay)-(bx, by).
+function distToSegmentSq(px, py, ax, ay, bx, by) {
   const dx = bx - ax, dy = by - ay;
   const lenSq = dx * dx + dy * dy;
-  if (lenSq === 0) return Math.hypot(px - ax, py - ay);
-  let t = ((px - ax) * dx + (py - ay) * dy) / lenSq;
-  t = Math.max(0, Math.min(1, t));
-  return Math.hypot(px - (ax + t * dx), py - (ay + t * dy));
+  let cx, cy;
+  if (lenSq === 0) {
+    cx = ax; cy = ay;
+  } else {
+    let t = ((px - ax) * dx + (py - ay) * dy) / lenSq;
+    if (t < 0) t = 0; else if (t > 1) t = 1;
+    cx = ax + t * dx; cy = ay + t * dy;
+  }
+  const ex = px - cx, ey = py - cy;
+  return ex * ex + ey * ey;
 }

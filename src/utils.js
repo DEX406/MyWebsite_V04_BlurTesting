@@ -1,4 +1,4 @@
-import { GRID_SIZE, SNAP_ANGLE } from './constants.js';
+import { GRID_SIZE, SNAP_ANGLE, DEG_TO_RAD } from './constants.js';
 
 export function uid() {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
@@ -98,7 +98,7 @@ export function computeResize(item, handle, screenDx, screenDy, snapVal) {
   const cfg = HANDLE_CFG[handle];
   if (!cfg) return { x: item.x, y: item.y, w: item.w, h: item.h };
 
-  const rad = (item.rotation || 0) * Math.PI / 180;
+  const rad = (item.rotation || 0) * DEG_TO_RAD;
   const cos = Math.cos(rad);
   const sin = Math.sin(rad);
 
@@ -160,17 +160,52 @@ export function isTyping() {
   return tag === "INPUT" || tag === "TEXTAREA" || !!document.activeElement?.isContentEditable;
 }
 
+/* ── localStorage helpers (wrap try/catch once) ── */
+export function readLocal(key, fallback) {
+  try {
+    const raw = localStorage.getItem(key);
+    if (raw === null) return fallback;
+    return JSON.parse(raw);
+  } catch { return fallback; }
+}
+
+export function writeLocal(key, value) {
+  try { localStorage.setItem(key, JSON.stringify(value)); } catch {}
+}
+
+/* ── Z-order helpers (single-pass min/max avoids Math.max(...arr) spread) ── */
+export function maxZ(items) {
+  let m = 0;
+  for (let i = 0; i < items.length; i++) { const z = items[i].z; if (z > m) m = z; }
+  return m;
+}
+
+export function minZ(items) {
+  if (!items.length) return 0;
+  let m = items[0].z;
+  for (let i = 1; i < items.length; i++) { const z = items[i].z; if (z < m) m = z; }
+  return m;
+}
+
 /* ── Item helpers ── */
 
 // Compute centroid, remap group IDs, offset items for paste
 export function pasteItems(clipboard, center, currentMaxZ) {
-  const centers = clipboard.map(item => item.type === "connector"
-    ? { x: ((item.x1 ?? 0) + (item.x2 ?? 0)) / 2, y: ((item.y1 ?? 0) + (item.y2 ?? 0)) / 2 }
-    : { x: (item.x ?? 0) + (item.w ?? 0) / 2, y: (item.y ?? 0) + (item.h ?? 0) / 2 });
-  const clipCX = centers.reduce((s, p) => s + p.x, 0) / centers.length;
-  const clipCY = centers.reduce((s, p) => s + p.y, 0) / centers.length;
-  const dx = center.x - clipCX;
-  const dy = center.y - clipCY;
+  if (!clipboard.length) return [];
+  // Single-pass centroid accumulation.
+  let sumX = 0, sumY = 0;
+  for (const item of clipboard) {
+    if (item.type === "connector") {
+      sumX += ((item.x1 ?? 0) + (item.x2 ?? 0)) / 2;
+      sumY += ((item.y1 ?? 0) + (item.y2 ?? 0)) / 2;
+    } else {
+      sumX += (item.x ?? 0) + (item.w ?? 0) / 2;
+      sumY += (item.y ?? 0) + (item.h ?? 0) / 2;
+    }
+  }
+  const n = clipboard.length;
+  const dx = center.x - sumX / n;
+  const dy = center.y - sumY / n;
   const groupIdMap = {};
   return clipboard.map((item, idx) => {
     let newGroupId = item.groupId;
@@ -178,6 +213,7 @@ export function pasteItems(clipboard, center, currentMaxZ) {
       if (!groupIdMap[newGroupId]) groupIdMap[newGroupId] = uid();
       newGroupId = groupIdMap[newGroupId];
     }
+    const z = currentMaxZ + 1 + idx;
     if (item.type === "connector") {
       return {
         ...item, id: uid(), groupId: newGroupId,
@@ -185,32 +221,37 @@ export function pasteItems(clipboard, center, currentMaxZ) {
         x2: (item.x2 ?? 0) + dx, y2: (item.y2 ?? 0) + dy,
         elbowX: (item.elbowX ?? ((item.x1 + item.x2) / 2)) + dx,
         elbowY: (item.elbowY ?? ((item.y1 + item.y2) / 2)) + dy,
-        z: currentMaxZ + 1 + idx,
+        z,
       };
     }
-    return { ...item, id: uid(), groupId: newGroupId, x: (item.x ?? 0) + dx, y: (item.y ?? 0) + dy, z: currentMaxZ + 1 + idx };
+    return { ...item, id: uid(), groupId: newGroupId, x: (item.x ?? 0) + dx, y: (item.y ?? 0) + dy, z };
   });
 }
 
 // Apply rotation default + connector elbow migration
 export function migrateItems(items) {
   return items.map(item => {
-    let out = { ...item, rotation: item.rotation || 0 };
-    if (item.type === "connector" && item.elbow !== undefined) {
-      const midY = ((item.y1 ?? 0) + (item.y2 ?? 0)) / 2;
-      out = { ...out, elbowX: item.elbow, elbowY: midY, orientation: "h" };
-      delete out.elbow;
-    }
-    if (item.type === "connector" && out.orientation === undefined) {
-      out = { ...out, elbowX: out.elbowX ?? ((out.x1 + out.x2) / 2), elbowY: out.elbowY ?? ((out.y1 + out.y2) / 2), orientation: "h" };
-    }
-    if ((item.type === "shape" || item.type === "text" || item.type === "link") && out.noiseEnabled === undefined) {
-      out = { ...out, noiseEnabled: false, noiseOpacity: out.noiseOpacity ?? 0.2 };
-    }
-    // Sanitize NaN elbow coords (can happen from previous bugs)
+    const out = { ...item, rotation: item.rotation || 0 };
     if (item.type === "connector") {
-      if (!Number.isFinite(out.elbowX)) out = { ...out, elbowX: ((out.x1 ?? 0) + (out.x2 ?? 0)) / 2 };
-      if (!Number.isFinite(out.elbowY)) out = { ...out, elbowY: ((out.y1 ?? 0) + (out.y2 ?? 0)) / 2 };
+      if (item.elbow !== undefined) {
+        out.elbowX = item.elbow;
+        out.elbowY = ((item.y1 ?? 0) + (item.y2 ?? 0)) / 2;
+        out.orientation = "h";
+        delete out.elbow;
+      }
+      if (out.orientation === undefined) {
+        out.elbowX = out.elbowX ?? ((out.x1 + out.x2) / 2);
+        out.elbowY = out.elbowY ?? ((out.y1 + out.y2) / 2);
+        out.orientation = "h";
+      }
+      // Sanitize NaN elbow coords (can happen from previous bugs)
+      if (!Number.isFinite(out.elbowX)) out.elbowX = ((out.x1 ?? 0) + (out.x2 ?? 0)) / 2;
+      if (!Number.isFinite(out.elbowY)) out.elbowY = ((out.y1 ?? 0) + (out.y2 ?? 0)) / 2;
+    } else if (item.type === "shape" || item.type === "text" || item.type === "link") {
+      if (out.noiseEnabled === undefined) {
+        out.noiseEnabled = false;
+        out.noiseOpacity = out.noiseOpacity ?? 0.2;
+      }
     }
     return out;
   });

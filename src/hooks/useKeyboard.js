@@ -2,9 +2,9 @@ import { useEffect } from 'react';
 import { uid, isTyping } from '../utils.js';
 
 export function useKeyboard({
-  isAdmin, selectedIds, setSelectedIds, clipboard, setClipboard,
+  isAdmin, selectedIds, setSelectedIds, setClipboard,
   items, setItemsAndSave, editingTextId, setEditingTextId,
-  viewCenter, setShiftHeld, undo, redo,
+  setShiftHeld, undo, redo,
 }) {
   useEffect(() => {
     const handleKeyDown = (e) => {
@@ -57,6 +57,6 @@ export function useKeyboard({
       window.removeEventListener("keydown", handleKeyDown);
       window.removeEventListener("keyup", handleKeyUp);
     };
-  }, [isAdmin, selectedIds, clipboard, items, editingTextId,
+  }, [isAdmin, selectedIds, items, editingTextId,
       setShiftHeld, setSelectedIds, setClipboard, setItemsAndSave, setEditingTextId, undo, redo]);
 }
