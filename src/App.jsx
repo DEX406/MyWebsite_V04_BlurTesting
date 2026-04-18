@@ -80,7 +80,10 @@ export default function App() {
   const { canvasRef, canvasHandlesRef, drawBgRef, posDisplayRef, zoomDisplayRef, applyTransform, updateDisplays, viewCenter, zoomTo, animateTo, goHome, setHome } = vp;
 
   // ── WebGL renderer ──
-  const webgl = useWebGLCanvas();
+  const webgl = useWebGLCanvas({ syncOverlays: (overlays, panX, panY, zoom) => {
+    const fn = syncOverlaysRef.current;
+    if (fn) fn(overlays, panX, panY, zoom);
+  }});
 
   // ── Media overlay (DOM elements behind canvas for videos/GIFs) ──
   const overlayRef = useRef(null);
@@ -88,6 +91,7 @@ export default function App() {
   // ── Blur overlay (single shared CSS backdrop-filter div behind canvas) ──
   const sharedBlurElRef = useRef(null); // one DOM div to avoid blur stacking
   const sharedBlurClipRef = useRef(null); // { svg, clipPath, id }
+  const syncOverlaysRef = useRef(null);
 
   const syncOverlays = useCallback((overlays, panX, panY, zoom) => {
     const container = overlayRef.current;
@@ -241,6 +245,7 @@ export default function App() {
     sharedEl.style.webkitClipPath = clipUrl;
     sharedEl.style.display = 'block';
   }, []);
+  syncOverlaysRef.current = syncOverlays;
 
   // Cleanup overlay elements on unmount
   useEffect(() => {
@@ -281,7 +286,7 @@ export default function App() {
       const panX = vp.panRef.current.x;
       const panY = vp.panRef.current.y;
       const zoom = vp.zoomRef.current;
-      const overlays = webgl.renderSync({
+      webgl.renderSync({
         items: renderItems,
         panX, panY, zoom,
         bgGrid: bgGridRef.current,
@@ -289,7 +294,6 @@ export default function App() {
         selectedIds: selectedIdsRef.current,
         editingTextId: editingTextIdRef.current,
       });
-      syncOverlays(overlays, panX, panY, zoom);
     };
     drawBgRef.current();
   }, []);

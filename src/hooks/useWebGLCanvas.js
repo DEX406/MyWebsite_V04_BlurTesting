@@ -1,20 +1,49 @@
 // React hook that owns the render Worker + OffscreenCanvas.
-// Main thread keeps: hit-testing, overlay computation, React state.
+// Main thread keeps: hit-testing, React state, DOM overlay sync, text-edit UI.
 // Worker owns: WebGPU device, image decode/upload, text rasterization, draw submission.
 
 import { useRef, useCallback, useEffect } from 'react';
 import { hitTest } from '../webgl/hitTest.js';
 import { computeOverlays } from '../overlays.js';
 
-export function useWebGLCanvas() {
+/**
+ * @param {{ syncOverlays?: (overlays, panX, panY, zoom) => void }} opts
+ */
+export function useWebGLCanvas({ syncOverlays } = {}) {
   const canvasRef = useRef(null);
   const workerRef = useRef(null);
   const canvasElRef = useRef(null);
   const readyRef = useRef(false);
-  const pendingRenderRef = useRef(null);
   const resizeObsRef = useRef(null);
 
+  // Coalesce: every renderSync call updates pendingRef; a single rAF drains it,
+  // so DOM overlay updates and the worker post happen in the same task and
+  // commit together on iOS where main/worker compositing desyncs otherwise.
+  const pendingRef = useRef(null);
+  const rafRef = useRef(0);
+  const syncRef = useRef(syncOverlays || null);
+  syncRef.current = syncOverlays || null;
+
   const _getDpr = () => (typeof window !== 'undefined' && window.devicePixelRatio) || 1;
+
+  const _flush = useCallback(() => {
+    rafRef.current = 0;
+    const data = pendingRef.current;
+    pendingRef.current = null;
+    if (!data) return;
+
+    const overlays = computeOverlays(data.items, {
+      panX: data.panX, panY: data.panY, zoom: data.zoom,
+      cssW: canvasElRef.current?.clientWidth || 0,
+      cssH: canvasElRef.current?.clientHeight || 0,
+      editingTextId: data.editingTextId,
+    });
+    if (syncRef.current) syncRef.current(overlays, data.panX, data.panY, data.zoom);
+
+    if (readyRef.current && workerRef.current) {
+      workerRef.current.postMessage({ type: 'render', data });
+    }
+  }, []);
 
   const initWorker = useCallback((canvas) => {
     if (!canvas || workerRef.current) return;
@@ -26,7 +55,6 @@ export function useWebGLCanvas() {
     }
 
     const offscreen = canvas.transferControlToOffscreen();
-
     const worker = new Worker(new URL('../webgpu/renderWorker.js', import.meta.url), { type: 'module' });
     workerRef.current = worker;
 
@@ -35,9 +63,9 @@ export function useWebGLCanvas() {
       if (!msg) return;
       if (msg.type === 'ready') {
         readyRef.current = true;
-        if (pendingRenderRef.current) {
-          worker.postMessage({ type: 'render', data: pendingRenderRef.current });
-          pendingRenderRef.current = null;
+        // Kick a render if one is pending.
+        if (pendingRef.current && !rafRef.current) {
+          rafRef.current = requestAnimationFrame(_flush);
         }
       } else if (msg.type === 'error') {
         console.error('[renderWorker]', msg.message);
@@ -53,7 +81,6 @@ export function useWebGLCanvas() {
 
     worker.postMessage({ type: 'init', canvas: offscreen, dpr, cssW, cssH }, [offscreen]);
 
-    // Observe size changes — worker owns canvas.width/height but needs CSS dims from us.
     if (parent && typeof ResizeObserver !== 'undefined') {
       const obs = new ResizeObserver(() => {
         const w = parent.clientWidth;
@@ -65,31 +92,22 @@ export function useWebGLCanvas() {
       obs.observe(parent);
       resizeObsRef.current = obs;
     }
-  }, []);
+  }, [_flush]);
 
   const setCanvasRef = useCallback((el) => {
     canvasRef.current = el;
     if (el) initWorker(el);
   }, [initWorker]);
 
+  // renderSync now coalesces to the next rAF so DOM overlay sync + worker post
+  // commit in the same browser frame.
   const renderSync = useCallback((data) => {
-    const worker = workerRef.current;
-    const overlays = computeOverlays(data.items, {
-      panX: data.panX, panY: data.panY, zoom: data.zoom,
-      cssW: canvasElRef.current?.clientWidth || 0,
-      cssH: canvasElRef.current?.clientHeight || 0,
-      editingTextId: data.editingTextId,
-    });
-    if (!worker) return overlays;
-    if (!readyRef.current) {
-      pendingRenderRef.current = data;
-      return overlays;
+    pendingRef.current = data;
+    if (!rafRef.current) {
+      rafRef.current = requestAnimationFrame(_flush);
     }
-    worker.postMessage({ type: 'render', data });
-    return overlays;
-  }, []);
+  }, [_flush]);
 
-  // Alias — main-thread-facing API unchanged.
   const requestRender = renderSync;
 
   const doHitTest = useCallback((screenX, screenY, items, panX, panY, zoom) => {
@@ -106,6 +124,7 @@ export function useWebGLCanvas() {
 
   useEffect(() => {
     return () => {
+      if (rafRef.current) cancelAnimationFrame(rafRef.current);
       if (resizeObsRef.current) resizeObsRef.current.disconnect();
       const worker = workerRef.current;
       if (worker) {
