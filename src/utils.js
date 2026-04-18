@@ -82,6 +82,24 @@ export function isItemVisibleAtTime(item, now = Date.now()) {
   return (now % cycle) < onMs;
 }
 
+// Time in ms until the next flash visibility flip across all items, or Infinity
+// if no item will ever transition. Used to schedule redraws only when needed
+// instead of polling on a fixed interval.
+export function nextFlashTransitionMs(items, now = Date.now()) {
+  let minDelay = Infinity;
+  for (const item of items) {
+    if (!isItemFlashEnabled(item)) continue;
+    const onMs = Math.max(0, Number(item.flashOnMs ?? 500));
+    const offMs = Math.max(0, Number(item.flashOffMs ?? 500));
+    if (onMs <= 0 || offMs <= 0) continue;
+    const cycle = onMs + offMs;
+    const pos = now % cycle;
+    const delay = pos < onMs ? (onMs - pos) : (cycle - pos);
+    if (delay < minDelay) minDelay = delay;
+  }
+  return minDelay;
+}
+
 /* ── Rotation-aware 8-point resize ── */
 const HANDLE_CFG = {
   tl: { dx: -1, dy: -1, ax:  1, ay:  1 },
