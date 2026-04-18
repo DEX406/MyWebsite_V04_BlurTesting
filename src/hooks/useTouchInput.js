@@ -1,9 +1,15 @@
 import { useRef, useCallback, useEffect } from 'react';
 import { snap, snapAngle, computeResize, applyDragDelta, computeElbowOrientation } from '../utils.js';
-import { RAD_TO_DEG } from '../constants.js';
+import { RAD_TO_DEG, TOUCH_PAN_SMOOTH_TAU_MS, TOUCH_DRAG_SMOOTH_TAU_MS } from '../constants.js';
 import { MIN_ZOOM, MAX_ZOOM } from './useViewport.js';
 
 const TOUCH_TAP_THRESHOLD = 10;
+// Clamp smoothing dt so a paused tab / long GC pause doesn't snap the view
+// in a single enormous step when rAF resumes.
+const SMOOTH_MAX_DT_MS = 50;
+// Stop the smoothing loop once we're within this distance of target (sub-pixel)
+// to avoid burning rAFs on imperceptible residuals.
+const SMOOTH_EPSILON = 0.05;
 
 export function useTouchInput({
   vp, loading,
@@ -25,6 +31,14 @@ export function useTouchInput({
   // iOS touch-event coalescing from producing uneven per-frame position updates.
   const rafIdRef = useRef(0);
   const pendingTouchesRef = useRef(null);
+
+  // Delta-time smoothing for pan/drag: touchmove writes a target position, a
+  // continuous rAF loop integrates toward it with exp(-dt/tau). This decouples
+  // rendered displacement from irregular frame pacing under heavy load.
+  const smoothRafRef = useRef(0);
+  const smoothLastTimeRef = useRef(0);
+  const targetPanRef = useRef({ x: 0, y: 0 });
+  const targetDragRef = useRef({ dx: 0, dy: 0 });
 
   const handleTouchStart = useCallback((e) => {
     if (e.target.closest("[data-ui]")) return;
@@ -94,8 +108,69 @@ export function useTouchInput({
     }
   }, []);
 
+  // Exponential-smoothing loop for pan/drag. Runs every rAF during those gestures
+  // and integrates rendered position toward the touch target with exp(-dt/tau).
+  // Decouples rendered displacement from irregular frame pacing under heavy load,
+  // which is what produces the same-axis "fast shake" during fast motion.
+  const smoothStep = useCallback((now) => {
+    smoothRafRef.current = 0;
+    if (!touchRef.current) return;
+    const gesture = touchRef.current.gesture;
+    if (gesture !== "pan" && gesture !== "drag") return;
+
+    const prev = smoothLastTimeRef.current;
+    smoothLastTimeRef.current = now;
+    const dt = prev === 0 ? 0 : Math.min(now - prev, SMOOTH_MAX_DT_MS);
+
+    if (gesture === "pan") {
+      const tau = TOUCH_PAN_SMOOTH_TAU_MS;
+      const alpha = dt === 0 ? 0 : (tau > 0 ? 1 - Math.exp(-dt / tau) : 1);
+      const tgt = targetPanRef.current;
+      const cur = panRef.current;
+      const nx = cur.x + (tgt.x - cur.x) * alpha;
+      const ny = cur.y + (tgt.y - cur.y) * alpha;
+      panRef.current = { x: nx, y: ny };
+      applyTransform();
+      updateDisplays();
+      const err = Math.hypot(tgt.x - nx, tgt.y - ny);
+      if (err > SMOOTH_EPSILON || dt === 0) {
+        smoothRafRef.current = requestAnimationFrame(smoothStep);
+      }
+    } else {
+      const tau = TOUCH_DRAG_SMOOTH_TAU_MS;
+      const alpha = dt === 0 ? 0 : (tau > 0 ? 1 - Math.exp(-dt / tau) : 1);
+      const tgt = targetDragRef.current;
+      const cur = dragDeltaRef.current || { dx: 0, dy: 0 };
+      const ndx = cur.dx + (tgt.dx - cur.dx) * alpha;
+      const ndy = cur.dy + (tgt.dy - cur.dy) * alpha;
+      dragDeltaRef.current = { dx: ndx, dy: ndy };
+      if (drawBgRef.current) drawBgRef.current();
+      const err = Math.hypot(tgt.dx - ndx, tgt.dy - ndy);
+      if (err > SMOOTH_EPSILON || dt === 0) {
+        smoothRafRef.current = requestAnimationFrame(smoothStep);
+      }
+    }
+  }, [applyTransform, updateDisplays]);
+
+  const scheduleSmooth = useCallback(() => {
+    if (smoothRafRef.current) return;
+    smoothLastTimeRef.current = 0; // first step establishes baseline (dt=0, no position change)
+    smoothRafRef.current = requestAnimationFrame(smoothStep);
+  }, [smoothStep]);
+
+  const stopSmooth = useCallback(() => {
+    if (smoothRafRef.current) {
+      cancelAnimationFrame(smoothRafRef.current);
+      smoothRafRef.current = 0;
+    }
+    smoothLastTimeRef.current = 0;
+  }, []);
+
   // Applies the latest snapshotted touch positions to the active gesture.
   // Runs inside rAF so multiple touchmove events per frame collapse into one render.
+  // For pan/drag this only writes the smoothing target; the smoothing loop renders.
+  // For pinch/resize/rotate/connector it applies directly (those gestures need
+  // precise, unlagged response).
   const flushTouchFrame = useCallback(() => {
     rafIdRef.current = 0;
     const snap = pendingTouchesRef.current;
@@ -127,14 +202,13 @@ export function useTouchInput({
       const gesture = touchRef.current.gesture;
       const es = effectiveSnapRef.current;
       if (gesture === "pan") {
-        panRef.current = { x: t.clientX - panStartRef.current.x, y: t.clientY - panStartRef.current.y };
-        applyTransform();
-        updateDisplays();
+        targetPanRef.current = { x: t.clientX - panStartRef.current.x, y: t.clientY - panStartRef.current.y };
+        scheduleSmooth();
       } else if (gesture === "drag") {
         const ddx = (t.clientX - touchRef.current.startX) / zoomRef.current;
         const ddy = (t.clientY - touchRef.current.startY) / zoomRef.current;
-        dragDeltaRef.current = { dx: ddx, dy: ddy };
-        if (drawBgRef.current) drawBgRef.current();
+        targetDragRef.current = { dx: ddx, dy: ddy };
+        scheduleSmooth();
       } else if (gesture === "resize") {
         const ddx = (t.clientX - touchRef.current.startX) / zoomRef.current;
         const ddy = (t.clientY - touchRef.current.startY) / zoomRef.current;
@@ -172,7 +246,7 @@ export function useTouchInput({
         }
       }
     }
-  }, [applyTransform, updateDisplays]);
+  }, [applyTransform, updateDisplays, scheduleSmooth]);
 
   const snapshotTouches = (e) => {
     const out = [];
@@ -260,17 +334,22 @@ export function useTouchInput({
             setDragging(dragInfo);
             draggingRef.current = dragInfo;  // sync ref so GPU render has it immediately
             touchRef.current.gesture = "drag";
+            // Seed smoothing state so the loop starts at (0,0) with no initial jump.
+            targetDragRef.current = { dx: 0, dy: 0 };
+            dragDeltaRef.current = { dx: 0, dy: 0 };
           } else {
             // Unknown action — pan
             isPanningRef.current = true;
             panStartRef.current = { x: touchRef.current.startX - panRef.current.x, y: touchRef.current.startY - panRef.current.y };
             touchRef.current.gesture = "pan";
+            targetPanRef.current = { x: panRef.current.x, y: panRef.current.y };
           }
         } else {
           // Not admin or no item — pan canvas
           isPanningRef.current = true;
           panStartRef.current = { x: touchRef.current.startX - panRef.current.x, y: touchRef.current.startY - panRef.current.y };
           touchRef.current.gesture = "pan";
+          targetPanRef.current = { x: panRef.current.x, y: panRef.current.y };
         }
       }
 
@@ -291,6 +370,11 @@ export function useTouchInput({
     }
     if (pendingTouchesRef.current) flushTouchFrame();
 
+    // Stop smoothing loop; release commits use the target (finger's last position)
+    // so the item/pan lands exactly where the finger was rather than where the
+    // smoother had integrated to.
+    stopSmooth();
+
     // Always cancel any pending long-press
     if (longPressTimerRef.current) {
       clearTimeout(longPressTimerRef.current);
@@ -310,7 +394,9 @@ export function useTouchInput({
       touchRef.current = null;
 
       if (ref.gesture === "drag") {
-        const delta = dragDeltaRef.current;
+        // Commit the target delta (where the finger actually ended), not the
+        // partially-smoothed one.
+        const delta = targetDragRef.current;
         const drag = draggingRef.current;
         if (delta && drag) {
           setItems(p => applyDragDelta(p, drag.itemsStartMap, delta.dx, delta.dy, effectiveSnapRef.current));
@@ -321,6 +407,10 @@ export function useTouchInput({
         return;
       }
       if (ref.gesture === "pan") {
+        // Snap to target so the view doesn't appear "behind" the finger after release.
+        panRef.current = { ...targetPanRef.current };
+        applyTransform();
+        updateDisplays();
         isPanningRef.current = false;
         return;
       }
@@ -375,7 +465,7 @@ export function useTouchInput({
         }
       }
     }
-  }, [scheduleSave, flushTouchFrame]);
+  }, [scheduleSave, flushTouchFrame, stopSmooth, applyTransform, updateDisplays]);
 
   // Register touch listeners on canvas
   useEffect(() => {
@@ -391,6 +481,10 @@ export function useTouchInput({
       if (rafIdRef.current) {
         cancelAnimationFrame(rafIdRef.current);
         rafIdRef.current = 0;
+      }
+      if (smoothRafRef.current) {
+        cancelAnimationFrame(smoothRafRef.current);
+        smoothRafRef.current = 0;
       }
       pendingTouchesRef.current = null;
     };

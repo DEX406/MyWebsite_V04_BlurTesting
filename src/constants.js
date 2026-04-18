@@ -27,6 +27,15 @@ export const TEXT_DEFAULT_SIZE = 24; // default fontSize (px)
 
 export const FONTS = CUSTOM_FONTS;
 
+// ── Touch motion smoothing ──
+// Exponential-smoothing time constants (ms) applied to pan and item-drag gestures.
+// Higher value = smoother motion but more perceived input lag; lower value = crisper
+// response but more visible frame-pacing jitter under load. Set to 0 to disable.
+// Typical useful range: 20–80 ms. Drag usually wants a smaller tau than pan so items
+// feel "stuck to the finger" while the camera still benefits from heavier smoothing.
+export const TOUCH_PAN_SMOOTH_TAU_MS = 45;
+export const TOUCH_DRAG_SMOOTH_TAU_MS = 25;
+
 export const SHAPE_PRESETS = [
   { label: "Rectangle", w: 208, h: 128 },
   { label: "Square", w: 160, h: 160 },
