@@ -20,6 +20,7 @@ export const Z = {
 
 // ── Global surface colors ──
 export const UI_BG = "#141413";
+export const UI_BLUR = "blur(20px)";  // retained for user canvas objects only
 export const UI_BORDER = "1px solid rgba(194,192,182,0.06)";
 export const UI_RADIUS = 8;
 

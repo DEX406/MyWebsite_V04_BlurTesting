@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useRef } from 'react';
 import { snap, snapAngle, computeResize, applyDragDelta, computeElbowOrientation } from '../utils.js';
-import { RAD_TO_DEG } from '../constants.js';
 import { MIN_ZOOM, MAX_ZOOM } from './useViewport.js';
 
 export function usePointerInput({
@@ -130,7 +129,7 @@ export function usePointerInput({
         const rect = canvasRef.current.getBoundingClientRect();
         const centerX = rect.left + (item.x + item.w / 2) * zoomRef.current + panRef.current.x;
         const centerY = rect.top + (item.y + item.h / 2) * zoomRef.current + panRef.current.y;
-        setRotating({ id, centerX, centerY, startAngle: item.rotation || 0, startMouseAngle: Math.atan2(e.clientY - centerY, e.clientX - centerX) * RAD_TO_DEG });
+        setRotating({ id, centerX, centerY, startAngle: item.rotation || 0, startMouseAngle: Math.atan2(e.clientY - centerY, e.clientX - centerX) * 180 / Math.PI });
       }
 
       e.preventDefault();
@@ -190,7 +189,7 @@ export function usePointerInput({
       itemOverrideRef.current = { id: rsz.id, props: { x: r.x, y: r.y, w: r.w, h: r.h } };
       if (drawBgRef.current) drawBgRef.current();
     } else if (rot) {
-      const mouseAngle = Math.atan2(e.clientY - rot.centerY, e.clientX - rot.centerX) * RAD_TO_DEG;
+      const mouseAngle = Math.atan2(e.clientY - rot.centerY, e.clientX - rot.centerX) * 180 / Math.PI;
       const deltaAngle = mouseAngle - rot.startMouseAngle;
       const newAngle = snapAngle(rot.startAngle + deltaAngle, es);
       itemOverrideRef.current = { id: rot.id, props: { rotation: newAngle } };
@@ -262,17 +261,11 @@ export function usePointerInput({
     if (drag) {
       const delta = e.deltaY < 0 ? -1 : 1;
       setItems(p => {
-        // Single pass: find min/max z across all items.
-        let zMin = p.length ? p[0].z : 0;
-        let zMax = zMin;
-        for (let idx = 1; idx < p.length; idx++) {
-          const z = p[idx].z;
-          if (z < zMin) zMin = z; else if (z > zMax) zMax = z;
-        }
-        const dragSet = new Set(drag.ids);
+        const maxZ = Math.max(...p.map(i => i.z));
+        const minZ = Math.min(...p.map(i => i.z));
         return p.map(i => {
-          if (!dragSet.has(i.id)) return i;
-          const newZ = Math.max(zMin, Math.min(zMax + 1, i.z + delta));
+          if (!drag.ids.includes(i.id)) return i;
+          const newZ = Math.max(minZ, Math.min(maxZ + 1, i.z + delta));
           return { ...i, z: newZ };
         });
       });

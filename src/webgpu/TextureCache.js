@@ -67,24 +67,18 @@ export class TextureCache {
   }
 
   _evict() {
-    let toEvict = this.cache.size - MAX_TEXTURES;
-    if (toEvict <= 0) return;
-    // Map iteration order is insertion order, so no sort is needed.
-    // Evict oldest non-placeholders first; placeholders are evicted last so
-    // low-res thumbnails remain on-screen while full-res loads.
-    const placeholders = [];
-    for (const [url, entry] of this.cache) {
-      if (toEvict <= 0) break;
-      if (entry.isPlaceholder) { placeholders.push([url, entry]); continue; }
-      entry.tex.destroy();
-      this.cache.delete(url);
-      toEvict--;
-    }
-    for (let i = 0; i < placeholders.length && toEvict > 0; i++) {
-      const [url, entry] = placeholders[i];
-      entry.tex.destroy();
-      this.cache.delete(url);
-      toEvict--;
+    if (this.cache.size <= MAX_TEXTURES) return;
+    const entries = [...this.cache.entries()]
+      .map(([url, entry]) => ({ url, ...entry }))
+      .sort((a, b) => a.insertOrder - b.insertOrder);
+    const nonPlaceholders = entries.filter(e => !e.isPlaceholder);
+    const placeholders = entries.filter(e => e.isPlaceholder);
+    const evictOrder = [...nonPlaceholders, ...placeholders];
+    const toEvict = this.cache.size - MAX_TEXTURES;
+    for (let i = 0; i < toEvict && i < evictOrder.length; i++) {
+      const e = evictOrder[i];
+      e.tex.destroy();
+      this.cache.delete(e.url);
     }
   }
 

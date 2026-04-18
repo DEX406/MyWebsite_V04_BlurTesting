@@ -2,12 +2,6 @@ import { CUSTOM_FONTS } from './fontLibrary.js';
 
 export const FONT = CUSTOM_FONTS[0]?.value || "sans-serif";
 export const GRID_SIZE = 16;
-
-// Precomputed radian/degree conversion factors (avoid re-evaluating Math.PI/180 in hot paths).
-export const DEG_TO_RAD = Math.PI / 180;
-export const RAD_TO_DEG = 180 / Math.PI;
-
-
 export const DEFAULT_BG_GRID = {
   enabled: true,
   bgColor: "#141413",

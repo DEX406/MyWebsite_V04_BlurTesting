@@ -9,7 +9,7 @@ import { TextureCache } from './TextureCache.js';
 import { TextRenderer } from './TextRenderer.js';
 import { PillRenderer } from './PillRenderer.js';
 import { hexToRgb, isGifSrc, isItemVisibleAtTime } from '../utils.js';
-import { GLASS_DOWNSAMPLE, DEG_TO_RAD } from '../constants.js';
+import { GLASS_DOWNSAMPLE } from '../constants.js';
 
 function hexToRgba(hex, alpha = 1) {
   return [...hexToRgb(hex), alpha];
@@ -250,11 +250,8 @@ export class GPURenderer {
 
   // ── Resize ─────────────────────────────────────────────────────────────────
 
-  // Physical-pixel scale (CSS → physical DPR × supersampling factor).
-  _scale() { return (window.devicePixelRatio || 1) * SUPERSAMPLE; }
-
   resize() {
-    const dpr = this._scale();
+    const dpr = (window.devicePixelRatio || 1) * SUPERSAMPLE;
     const parent = this.canvas.parentElement;
     if (!parent) return;
     const w = parent.clientWidth;
@@ -280,7 +277,7 @@ export class GPURenderer {
   render({ items, panX, panY, zoom, bgGrid, globalShadow, selectedIds, editingTextId }) {
     this._overlays = []; // media overlay data for DOM positioning
     const device = this.device;
-    const dpr = this._scale();
+    const dpr = (window.devicePixelRatio || 1) * SUPERSAMPLE;
     const A = this._align;
 
     this.resize();
@@ -304,20 +301,18 @@ export class GPURenderer {
     // ── Phase 0: Pre-allocate blur textures at world-pixel resolution (zoom-independent) ──
     const sorted = [...items].sort((a, b) => a.z - b.z);
     this._currentSorted = sorted; // available to _findMediaBehind
+    const blurItems = sorted.filter(i => i.bgBlur && i.type !== 'connector');
 
-    // Single pass: collect blur items, build blur-meta map, and the active-id set.
     const blurMeta = new Map(); // itemId → { item, blurW, blurH, idx }
-    const activeBlurIds = new Set();
     let blurIdx = 0;
-    for (const item of sorted) {
-      if (!item.bgBlur || item.type === 'connector') continue;
-      activeBlurIds.add(item.id);
+    for (const item of blurItems) {
       if (item.w <= 0 || item.h <= 0) continue;
       const blurW = Math.max(2, Math.ceil(item.w * GLASS_DOWNSAMPLE));
       const blurH = Math.max(2, Math.ceil(item.h * GLASS_DOWNSAMPLE));
       this._getOrCreateBlurTexture(item.id, blurW, blurH);
       blurMeta.set(item.id, { item, blurW, blurH, idx: blurIdx++ });
     }
+    const activeBlurIds = new Set(blurItems.map(i => i.id));
     this._cleanupBlurTextures(activeBlurIds);
 
     // ── Phase 1: Collect all draw commands ──
@@ -680,7 +675,7 @@ export class GPURenderer {
     u[0] = resW; u[1] = resH;
     u[2] = panX; u[3] = panY;
     u[4] = zoom;
-    u[5] = (item.rotation || 0) * DEG_TO_RAD;
+    u[5] = (item.rotation || 0) * Math.PI / 180;
     u[6] = item.radius ?? 2;
     u[7] = 1.0; // opacity
     u[8] = item.x; u[9] = item.y;
@@ -724,7 +719,7 @@ export class GPURenderer {
         mu[0] = resW; mu[1] = resH;
         mu[2] = panX; mu[3] = panY;
         mu[4] = zoom;
-        mu[5] = (item.rotation || 0) * DEG_TO_RAD;
+        mu[5] = (item.rotation || 0) * Math.PI / 180;
         mu[6] = item.radius ?? 2;
         mu[7] = 1.0;
         mu[8] = item.x; mu[9] = item.y;
@@ -809,7 +804,7 @@ export class GPURenderer {
         mu[0] = resW; mu[1] = resH;
         mu[2] = panX; mu[3] = panY;
         mu[4] = zoom;
-        mu[5] = (item.rotation || 0) * DEG_TO_RAD;
+        mu[5] = (item.rotation || 0) * Math.PI / 180;
         mu[6] = item.radius ?? 2;
         mu[7] = 1.0; // opacity
         mu[8] = item.x; mu[9] = item.y;
@@ -901,7 +896,7 @@ export class GPURenderer {
     u[0] = resW; u[1] = resH;
     u[2] = panX; u[3] = panY;
     u[4] = zoom;
-    u[5] = (item.rotation || 0) * DEG_TO_RAD;
+    u[5] = (item.rotation || 0) * Math.PI / 180;
     u[6] = (item.radius ?? 2) + 1;
     u[7] = 1.0;
     u[8] = item.x; u[9] = item.y;
@@ -1103,7 +1098,7 @@ export class GPURenderer {
   // ── Overlay collection (handles, pills, group box) ────────────────────────
 
   _collectItemHandles(item, panDpr, panDprY, zoomDpr, resW, resH, oLines, oCircles) {
-    const rot = (item.rotation || 0) * DEG_TO_RAD;
+    const rot = (item.rotation || 0) * Math.PI / 180;
     const cx = item.x + item.w / 2;
     const cy = item.y + item.h / 2;
     const cosR = Math.cos(rot);
@@ -1197,25 +1192,16 @@ export class GPURenderer {
     if (!gid || !selItems.every(i => i.groupId === gid)) return;
 
     const pad = 10;
-    // Single-pass aggregate bounds across selection (avoids 4× spread on large groups).
-    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-    for (const i of selItems) {
-      let x, y, r, b;
-      if (i.type === 'connector') {
-        const eX = i.elbowX ?? (i.x1 + i.x2) / 2;
-        x = Math.min(i.x1, i.x2, eX);
-        r = Math.max(i.x1, i.x2, eX);
-        y = Math.min(i.y1, i.y2);
-        b = Math.max(i.y1, i.y2);
-      } else {
-        x = i.x; y = i.y; r = i.x + i.w; b = i.y + i.h;
-      }
-      if (x < minX) minX = x;
-      if (y < minY) minY = y;
-      if (r > maxX) maxX = r;
-      if (b > maxY) maxY = b;
-    }
-    minX -= pad; minY -= pad; maxX += pad; maxY += pad;
+    const bounds = selItems.map(i => i.type === 'connector'
+      ? { x: Math.min(i.x1, i.x2, i.elbowX ?? (i.x1 + i.x2) / 2),
+          y: Math.min(i.y1, i.y2),
+          r: Math.max(i.x1, i.x2, i.elbowX ?? (i.x1 + i.x2) / 2),
+          b: Math.max(i.y1, i.y2) }
+      : { x: i.x, y: i.y, r: i.x + i.w, b: i.y + i.h });
+    const minX = Math.min(...bounds.map(b => b.x)) - pad;
+    const minY = Math.min(...bounds.map(b => b.y)) - pad;
+    const maxX = Math.max(...bounds.map(b => b.r)) + pad;
+    const maxY = Math.max(...bounds.map(b => b.b)) + pad;
     const w = maxX - minX;
     const h = maxY - minY;
 
