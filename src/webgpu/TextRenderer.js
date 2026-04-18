@@ -1,6 +1,6 @@
-// Renders text items to offscreen Canvas2D alpha-mask textures (GPUTexture).
+// Renders text items to OffscreenCanvas alpha-mask textures (GPUTexture).
+// Worker-compatible — no DOM dependencies.
 // Only the glyph shape is baked in; color and background are shader uniforms.
-// Caches based on properties that affect glyph shape only.
 
 import { TEXT_PAD_X, TEXT_PAD_Y, TEXT_LINE_HEIGHT, TEXT_DEFAULT_SIZE, FONT } from '../constants.js';
 
@@ -9,14 +9,21 @@ export class TextRenderer {
     this.device = device;
     this.cache = new Map();    // key → { tex, view, width, height, lastUsed }
     this.itemKeys = new Map(); // itemId → current cache key
-    this.canvas = document.createElement('canvas');
+    this.canvas = new OffscreenCanvas(1, 1);
     this.ctx = this.canvas.getContext('2d');
+    this.dpr = 1; // set via setDpr before render
     this.sampler = device.createSampler({
       minFilter: 'linear',
       magFilter: 'linear',
       addressModeU: 'clamp-to-edge',
       addressModeV: 'clamp-to-edge',
     });
+  }
+
+  setDpr(dpr) {
+    if (dpr === this.dpr) return;
+    this.dpr = dpr;
+    this.invalidateAll();
   }
 
   _key(item) {
@@ -51,9 +58,9 @@ export class TextRenderer {
     return entry;
   }
 
-  _render(item) { // Scale is set here
+  _render(item) {
     const device = this.device;
-    const scale = 0.5 + (window.devicePixelRatio || 1);
+    const scale = 0.5 + this.dpr;
     const w = Math.ceil(item.w * scale);
     const h = Math.ceil(item.h * scale);
 
@@ -97,7 +104,6 @@ export class TextRenderer {
 
     ctx.setTransform(1, 0, 0, 1, 0, 0);
 
-    // Upload canvas to GPUTexture
     const tex = device.createTexture({
       size: [w, h],
       format: 'rgba8unorm',

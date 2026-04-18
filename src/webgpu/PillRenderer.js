@@ -1,5 +1,6 @@
 // Renders info-pill labels (e.g. "PNG · stored · 1920 × 1080") to GPU textures.
-// Each unique text string is cached as a small Canvas2D → GPUTexture.
+// Each unique text string is cached as a small OffscreenCanvas → GPUTexture.
+// Worker-compatible — no DOM dependencies.
 
 import { FONT } from '../constants.js';
 
@@ -7,7 +8,7 @@ export class PillRenderer {
   constructor(device) {
     this.device = device;
     this.cache = new Map(); // text → { tex, view, cssWidth, cssHeight }
-    this.canvas = document.createElement('canvas');
+    this.canvas = new OffscreenCanvas(1, 1);
     this.ctx = this.canvas.getContext('2d');
     this.sampler = device.createSampler({
       minFilter: 'linear',
@@ -27,14 +28,13 @@ export class PillRenderer {
   }
 
   _render(text) {
-    const scale = 4; // 2× for sharp text
+    const scale = 4;
     const ctx = this.ctx;
     const fontSize = 10;
     const padX = 10;
     const padY = 3;
     const font = `${fontSize}px ${FONT}, sans-serif`;
 
-    // Measure text width at 1× to get CSS dimensions
     ctx.font = font;
     const textW = ctx.measureText(text).width;
     const cssW = Math.ceil(textW + padX * 2);
@@ -47,21 +47,18 @@ export class PillRenderer {
     ctx.clearRect(0, 0, w, h);
     ctx.scale(scale, scale);
 
-    // Pill background
     const radius = cssH / 2;
     ctx.fillStyle = 'rgba(20,20,19,0.85)';
     ctx.beginPath();
     ctx.roundRect(0, 0, cssW, cssH, radius);
     ctx.fill();
 
-    // Subtle border
     ctx.strokeStyle = 'rgba(194,192,182,0.09)';
     ctx.lineWidth = 1;
     ctx.beginPath();
     ctx.roundRect(0.5, 0.5, cssW - 1, cssH - 1, Math.max(0, radius - 0.5));
     ctx.stroke();
 
-    // Text
     ctx.font = font;
     ctx.fillStyle = 'rgba(194,192,182,0.55)';
     ctx.textBaseline = 'middle';
@@ -70,7 +67,6 @@ export class PillRenderer {
 
     ctx.setTransform(1, 0, 0, 1, 0, 0);
 
-    // Upload to GPU
     const tex = this.device.createTexture({
       size: [w, h],
       format: 'rgba8unorm',

@@ -1,111 +1,117 @@
-// React hook that creates and manages the WebGPU renderer.
-// Replaces the DOM-based content layer with a single GPU-accelerated canvas.
+// React hook that owns the render Worker + OffscreenCanvas.
+// Main thread keeps: hit-testing, overlay computation, React state.
+// Worker owns: WebGPU device, image decode/upload, text rasterization, draw submission.
 
 import { useRef, useCallback, useEffect } from 'react';
-import { GPURenderer } from '../webgpu/GPURenderer.js';
 import { hitTest } from '../webgl/hitTest.js';
+import { computeOverlays } from '../overlays.js';
 
 export function useWebGLCanvas() {
   const canvasRef = useRef(null);
-  const rendererRef = useRef(null);
-  const rafRef = useRef(0);
-  const renderDataRef = useRef(null);
-  const initPromiseRef = useRef(null);
+  const workerRef = useRef(null);
+  const canvasElRef = useRef(null);
+  const readyRef = useRef(false);
+  const pendingRenderRef = useRef(null);
+  const resizeObsRef = useRef(null);
 
-  // Async WebGPU initialization
-  const initRenderer = useCallback((canvas) => {
-    if (!canvas || rendererRef.current || initPromiseRef.current) return;
+  const _getDpr = () => (typeof window !== 'undefined' && window.devicePixelRatio) || 1;
 
-    initPromiseRef.current = (async () => {
-      try {
-        if (!navigator.gpu) {
-          console.error('WebGPU is not supported in this browser.');
-          return;
+  const initWorker = useCallback((canvas) => {
+    if (!canvas || workerRef.current) return;
+    canvasElRef.current = canvas;
+
+    if (typeof canvas.transferControlToOffscreen !== 'function') {
+      console.error('OffscreenCanvas not supported.');
+      return;
+    }
+
+    const offscreen = canvas.transferControlToOffscreen();
+
+    const worker = new Worker(new URL('../webgpu/renderWorker.js', import.meta.url), { type: 'module' });
+    workerRef.current = worker;
+
+    worker.onmessage = (e) => {
+      const msg = e.data;
+      if (!msg) return;
+      if (msg.type === 'ready') {
+        readyRef.current = true;
+        if (pendingRenderRef.current) {
+          worker.postMessage({ type: 'render', data: pendingRenderRef.current });
+          pendingRenderRef.current = null;
         }
-        const adapter = await navigator.gpu.requestAdapter();
-        if (!adapter) {
-          console.error('Failed to get WebGPU adapter.');
-          return;
-        }
-        const device = await adapter.requestDevice();
-        const context = canvas.getContext('webgpu');
-        const format = navigator.gpu.getPreferredCanvasFormat();
-        context.configure({ device, format, alphaMode: 'premultiplied' });
-
-        const renderer = new GPURenderer(canvas, device, context);
-        renderer._onNeedsRedraw = () => {
-          const d = renderDataRef.current;
-          if (!d) return;
-          if (!rafRef.current) {
-            rafRef.current = requestAnimationFrame(() => {
-              rafRef.current = 0;
-              if (rendererRef.current && renderDataRef.current) {
-                rendererRef.current.render(renderDataRef.current);
-              }
-            });
-          }
-        };
-        rendererRef.current = renderer;
-
-        // If render data arrived while we were initializing, draw now
-        if (renderDataRef.current) {
-          renderer.render(renderDataRef.current);
-        }
-      } catch (e) {
-        console.error('Failed to create WebGPU renderer:', e);
+      } else if (msg.type === 'error') {
+        console.error('[renderWorker]', msg.message);
       }
-    })();
+    };
+
+    const parent = canvas.parentElement;
+    const cssW = parent?.clientWidth || canvas.clientWidth || 0;
+    const cssH = parent?.clientHeight || canvas.clientHeight || 0;
+    const dpr = _getDpr();
+    canvas.style.width = cssW + 'px';
+    canvas.style.height = cssH + 'px';
+
+    worker.postMessage({ type: 'init', canvas: offscreen, dpr, cssW, cssH }, [offscreen]);
+
+    // Observe size changes — worker owns canvas.width/height but needs CSS dims from us.
+    if (parent && typeof ResizeObserver !== 'undefined') {
+      const obs = new ResizeObserver(() => {
+        const w = parent.clientWidth;
+        const h = parent.clientHeight;
+        canvas.style.width = w + 'px';
+        canvas.style.height = h + 'px';
+        worker.postMessage({ type: 'setSize', cssW: w, cssH: h, dpr: _getDpr() });
+      });
+      obs.observe(parent);
+      resizeObsRef.current = obs;
+    }
   }, []);
 
   const setCanvasRef = useCallback((el) => {
     canvasRef.current = el;
-    if (el) initRenderer(el);
-  }, [initRenderer]);
-
-  const requestRender = useCallback((data) => {
-    renderDataRef.current = data;
-    if (!rafRef.current) {
-      rafRef.current = requestAnimationFrame(() => {
-        rafRef.current = 0;
-        const renderer = rendererRef.current;
-        const d = renderDataRef.current;
-        if (renderer && d) {
-          renderer.render(d);
-        }
-      });
-    }
-  }, []);
+    if (el) initWorker(el);
+  }, [initWorker]);
 
   const renderSync = useCallback((data) => {
-    renderDataRef.current = data;
-    if (rafRef.current) {
-      cancelAnimationFrame(rafRef.current);
-      rafRef.current = 0;
+    const worker = workerRef.current;
+    const overlays = computeOverlays(data.items, {
+      panX: data.panX, panY: data.panY, zoom: data.zoom,
+      cssW: canvasElRef.current?.clientWidth || 0,
+      cssH: canvasElRef.current?.clientHeight || 0,
+      editingTextId: data.editingTextId,
+    });
+    if (!worker) return overlays;
+    if (!readyRef.current) {
+      pendingRenderRef.current = data;
+      return overlays;
     }
-    const renderer = rendererRef.current;
-    if (renderer && data) {
-      renderer.render(data);
-    }
-    return renderer?._overlays || [];
+    worker.postMessage({ type: 'render', data });
+    return overlays;
   }, []);
+
+  // Alias — main-thread-facing API unchanged.
+  const requestRender = renderSync;
 
   const doHitTest = useCallback((screenX, screenY, items, panX, panY, zoom) => {
     return hitTest(screenX, screenY, items, panX, panY, zoom);
   }, []);
 
   const invalidateText = useCallback((itemId) => {
-    const renderer = rendererRef.current;
-    if (renderer) {
-      renderer.textRenderer.invalidate(itemId);
-    }
+    workerRef.current?.postMessage({ type: 'invalidateText', itemId });
+  }, []);
+
+  const invalidateAllText = useCallback(() => {
+    workerRef.current?.postMessage({ type: 'invalidateAllText' });
   }, []);
 
   useEffect(() => {
     return () => {
-      if (rafRef.current) cancelAnimationFrame(rafRef.current);
-      if (rendererRef.current) {
-        rendererRef.current.destroy();
-        rendererRef.current = null;
+      if (resizeObsRef.current) resizeObsRef.current.disconnect();
+      const worker = workerRef.current;
+      if (worker) {
+        worker.postMessage({ type: 'destroy' });
+        worker.terminate();
+        workerRef.current = null;
       }
     };
   }, []);
@@ -113,10 +119,10 @@ export function useWebGLCanvas() {
   return {
     setCanvasRef,
     canvasRef,
-    rendererRef,
     requestRender,
     renderSync,
     doHitTest,
     invalidateText,
+    invalidateAllText,
   };
 }

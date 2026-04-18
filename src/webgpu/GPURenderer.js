@@ -1,5 +1,6 @@
 // Main WebGPU renderer for the infinite canvas.
 // Renders: grid background, all content items, selection outlines, connectors.
+// Worker-compatible — no window/DOM refs. Caller provides dpr + cssW/cssH via setSize().
 
 import {
   GRID_SHADER, QUAD_SHADER, MATTE_SHADER, LINE_SHADER, CIRCLE_SHADER, BLUR_SHADER, BLIT_SHADER,
@@ -24,12 +25,17 @@ const BLUR_STEP = 1; // pixel spacing between Gaussian blur taps
 const NOISE_MAP_SIZE = 512;
 
 export class GPURenderer {
-  constructor(canvas, device, context) {
+  constructor(canvas, device, context, format) {
     this.canvas = canvas;
     this.device = device;
     this.context = context;
-    this.format = navigator.gpu.getPreferredCanvasFormat();
+    this.format = format;
     this._onNeedsRedraw = null;
+
+    // Caller-provided viewport state (set via setSize before first render).
+    this._cssW = 0;
+    this._cssH = 0;
+    this._dpr = 1;
 
     this.texCache = new TextureCache(device, () => {
       if (this._onNeedsRedraw) this._onNeedsRedraw();
@@ -251,16 +257,23 @@ export class GPURenderer {
   // ── Resize ─────────────────────────────────────────────────────────────────
 
   // Physical-pixel scale (CSS → physical DPR × supersampling factor).
-  _scale() { return (window.devicePixelRatio || 1) * SUPERSAMPLE; }
+  _scale() { return this._dpr * SUPERSAMPLE; }
+
+  // Main thread feeds current CSS size + devicePixelRatio — worker has no window.
+  setSize(cssW, cssH, dpr) {
+    const dprChanged = this._dpr !== dpr;
+    this._cssW = cssW;
+    this._cssH = cssH;
+    this._dpr = dpr;
+    if (dprChanged && this.textRenderer) this.textRenderer.setDpr(dpr);
+    this.resize();
+  }
 
   resize() {
     const dpr = this._scale();
-    const parent = this.canvas.parentElement;
-    if (!parent) return;
-    const w = parent.clientWidth;
-    const h = parent.clientHeight;
-    this.canvas.style.width = w + 'px';
-    this.canvas.style.height = h + 'px';
+    const w = this._cssW;
+    const h = this._cssH;
+    if (w <= 0 || h <= 0) return;
     const pw = Math.round(w * dpr);
     const ph = Math.round(h * dpr);
     if (this.canvas.width !== pw || this.canvas.height !== ph) {
