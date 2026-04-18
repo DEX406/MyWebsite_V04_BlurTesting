@@ -95,26 +95,35 @@ export class TextureCache {
 
     if (!this.loading.has(url)) {
       this.loading.add(url);
-      const img = new Image();
-      img.crossOrigin = 'anonymous';
-      img.onload = () => {
-        this.loading.delete(url);
-        const tex = this._createFromSource(img, img.naturalWidth, img.naturalHeight);
-        const entry = {
-          tex,
-          view: tex.createView(),
-          width: img.naturalWidth,
-          height: img.naturalHeight,
-          ready: true,
-          isPlaceholder,
-          insertOrder: this.insertCounter++,
-        };
-        this.cache.set(url, entry);
-        this._evict();
-        if (this._onTextureReady) this._onTextureReady();
-      };
-      img.onerror = () => { this.loading.delete(url); };
-      img.src = url;
+      // fetch + createImageBitmap moves decode off the main thread and gives
+      // copyExternalImageToTexture a GPU-friendly source — eliminates the
+      // HTMLImageElement upload stall when a new image first hits the GPU.
+      (async () => {
+        try {
+          const resp = await fetch(url, { mode: 'cors', credentials: 'omit' });
+          if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+          const blob = await resp.blob();
+          const bitmap = await createImageBitmap(blob, { premultiplyAlpha: 'none' });
+          const tex = this._createFromSource(bitmap, bitmap.width, bitmap.height);
+          const entry = {
+            tex,
+            view: tex.createView(),
+            width: bitmap.width,
+            height: bitmap.height,
+            ready: true,
+            isPlaceholder,
+            insertOrder: this.insertCounter++,
+          };
+          bitmap.close();
+          this.cache.set(url, entry);
+          this._evict();
+          if (this._onTextureReady) this._onTextureReady();
+        } catch {
+          // swallow — fallback texture is served until a later retry
+        } finally {
+          this.loading.delete(url);
+        }
+      })();
     }
 
     return this.fallback;
