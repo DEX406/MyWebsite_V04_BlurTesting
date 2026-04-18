@@ -20,6 +20,12 @@ export function useTouchInput({
   const lastTapRef = useRef({ time: 0, itemId: null });
   const longPressTimerRef = useRef(null);
 
+  // rAF-coalesced input: touchmove handlers capture the latest touch snapshot
+  // then a single rAF callback applies the gesture once per frame. This prevents
+  // iOS touch-event coalescing from producing uneven per-frame position updates.
+  const rafIdRef = useRef(0);
+  const pendingTouchesRef = useRef(null);
+
   const handleTouchStart = useCallback((e) => {
     if (e.target.closest("[data-ui]")) return;
     e.preventDefault();
@@ -88,12 +94,16 @@ export function useTouchInput({
     }
   }, []);
 
-  const handleTouchMove = useCallback((e) => {
-    if (!touchRef.current) return;
-    e.preventDefault();
+  // Applies the latest snapshotted touch positions to the active gesture.
+  // Runs inside rAF so multiple touchmove events per frame collapse into one render.
+  const flushTouchFrame = useCallback(() => {
+    rafIdRef.current = 0;
+    const snap = pendingTouchesRef.current;
+    pendingTouchesRef.current = null;
+    if (!snap || !touchRef.current) return;
 
-    if (touchRef.current.type === "pinch" && e.touches.length === 2) {
-      const t0 = e.touches[0], t1 = e.touches[1];
+    if (touchRef.current.type === "pinch" && snap.length === 2) {
+      const t0 = snap[0], t1 = snap[1];
       const midX = (t0.clientX + t1.clientX) / 2;
       const midY = (t0.clientY + t1.clientY) / 2;
       const dist = Math.hypot(t1.clientX - t0.clientX, t1.clientY - t0.clientY);
@@ -109,6 +119,82 @@ export function useTouchInput({
       zoomRef.current = nz;
       applyTransform();
       updateDisplays();
+      return;
+    }
+
+    if (touchRef.current.type === "single" && snap.length === 1 && touchRef.current.moved) {
+      const t = snap[0];
+      const gesture = touchRef.current.gesture;
+      const es = effectiveSnapRef.current;
+      if (gesture === "pan") {
+        panRef.current = { x: t.clientX - panStartRef.current.x, y: t.clientY - panStartRef.current.y };
+        applyTransform();
+        updateDisplays();
+      } else if (gesture === "drag") {
+        const ddx = (t.clientX - touchRef.current.startX) / zoomRef.current;
+        const ddy = (t.clientY - touchRef.current.startY) / zoomRef.current;
+        dragDeltaRef.current = { dx: ddx, dy: ddy };
+        if (drawBgRef.current) drawBgRef.current();
+      } else if (gesture === "resize") {
+        const ddx = (t.clientX - touchRef.current.startX) / zoomRef.current;
+        const ddy = (t.clientY - touchRef.current.startY) / zoomRef.current;
+        const si = touchRef.current.startItem;
+        const handle = touchRef.current.resizeHandle || "br";
+        const r = computeResize(si, handle, ddx, ddy, es);
+        itemOverrideRef.current = { id: si.id, props: { x: r.x, y: r.y, w: r.w, h: r.h } };
+        if (drawBgRef.current) drawBgRef.current();
+      } else if (gesture === "rotate") {
+        const { x: cx, y: cy } = touchRef.current.rotateCenter;
+        const mouseAngle = Math.atan2(t.clientY - cy, t.clientX - cx) * RAD_TO_DEG;
+        const deltaAngle = mouseAngle - touchRef.current.startMouseAngle;
+        const newAngle = snapAngle(touchRef.current.startAngle + deltaAngle, es);
+        const itemId = touchRef.current.itemId;
+        itemOverrideRef.current = { id: itemId, props: { rotation: newAngle } };
+        if (drawBgRef.current) drawBgRef.current();
+      } else if (gesture === "connector") {
+        const ddx = (t.clientX - touchRef.current.startX) / zoomRef.current;
+        const ddy = (t.clientY - touchRef.current.startY) / zoomRef.current;
+        const si = touchRef.current.startItem;
+        const handle = touchRef.current.connectorHandle;
+        let props;
+        if (handle === "ep1") {
+          props = { x1: snap(si.x1 + ddx, es), y1: snap(si.y1 + ddy, es) };
+        } else if (handle === "ep2") {
+          props = { x2: snap(si.x2 + ddx, es), y2: snap(si.y2 + ddy, es) };
+        } else if (handle === "elbow") {
+          const newElbowX = snap((si.elbowX ?? (si.x1 + si.x2) / 2) + ddx, es);
+          const newElbowY = snap((si.elbowY ?? (si.y1 + si.y2) / 2) + ddy, es);
+          props = { elbowX: newElbowX, elbowY: newElbowY, orientation: computeElbowOrientation(si, newElbowX, newElbowY) };
+        }
+        if (props) {
+          itemOverrideRef.current = { id: si.id, props };
+          if (drawBgRef.current) drawBgRef.current();
+        }
+      }
+    }
+  }, [applyTransform, updateDisplays]);
+
+  const snapshotTouches = (e) => {
+    const out = [];
+    for (let i = 0; i < e.touches.length; i++) {
+      const t = e.touches[i];
+      out.push({ clientX: t.clientX, clientY: t.clientY });
+    }
+    return out;
+  };
+
+  const scheduleTouchFrame = useCallback(() => {
+    if (rafIdRef.current) return;
+    rafIdRef.current = requestAnimationFrame(flushTouchFrame);
+  }, [flushTouchFrame]);
+
+  const handleTouchMove = useCallback((e) => {
+    if (!touchRef.current) return;
+    e.preventDefault();
+
+    if (touchRef.current.type === "pinch" && e.touches.length === 2) {
+      pendingTouchesRef.current = snapshotTouches(e);
+      scheduleTouchFrame();
       return;
     }
 
@@ -188,60 +274,22 @@ export function useTouchInput({
         }
       }
 
-      // Continue the gesture
-      const gesture = touchRef.current.gesture;
-      const es = effectiveSnapRef.current;
-      if (gesture === "pan") {
-        panRef.current = { x: t.clientX - panStartRef.current.x, y: t.clientY - panStartRef.current.y };
-        applyTransform();
-        updateDisplays();
-      } else if (gesture === "drag") {
-        const ddx = (t.clientX - touchRef.current.startX) / zoomRef.current;
-        const ddy = (t.clientY - touchRef.current.startY) / zoomRef.current;
-        // Bypass React state — update ref and render WebGPU directly for zero-latency touch
-        dragDeltaRef.current = { dx: ddx, dy: ddy };
-        if (drawBgRef.current) drawBgRef.current();
-      } else if (gesture === "resize") {
-        const ddx = (t.clientX - touchRef.current.startX) / zoomRef.current;
-        const ddy = (t.clientY - touchRef.current.startY) / zoomRef.current;
-        const si = touchRef.current.startItem;
-        const handle = touchRef.current.resizeHandle || "br";
-        const r = computeResize(si, handle, ddx, ddy, es);
-        itemOverrideRef.current = { id: si.id, props: { x: r.x, y: r.y, w: r.w, h: r.h } };
-        if (drawBgRef.current) drawBgRef.current();
-      } else if (gesture === "rotate") {
-        const { x: cx, y: cy } = touchRef.current.rotateCenter;
-        const mouseAngle = Math.atan2(t.clientY - cy, t.clientX - cx) * RAD_TO_DEG;
-        const deltaAngle = mouseAngle - touchRef.current.startMouseAngle;
-        const newAngle = snapAngle(touchRef.current.startAngle + deltaAngle, es);
-        const itemId = touchRef.current.itemId;
-        itemOverrideRef.current = { id: itemId, props: { rotation: newAngle } };
-        if (drawBgRef.current) drawBgRef.current();
-      } else if (gesture === "connector") {
-        const ddx = (t.clientX - touchRef.current.startX) / zoomRef.current;
-        const ddy = (t.clientY - touchRef.current.startY) / zoomRef.current;
-        const si = touchRef.current.startItem;
-        const handle = touchRef.current.connectorHandle;
-        let props;
-        if (handle === "ep1") {
-          props = { x1: snap(si.x1 + ddx, es), y1: snap(si.y1 + ddy, es) };
-        } else if (handle === "ep2") {
-          props = { x2: snap(si.x2 + ddx, es), y2: snap(si.y2 + ddy, es) };
-        } else if (handle === "elbow") {
-          const newElbowX = snap((si.elbowX ?? (si.x1 + si.x2) / 2) + ddx, es);
-          const newElbowY = snap((si.elbowY ?? (si.y1 + si.y2) / 2) + ddy, es);
-          props = { elbowX: newElbowX, elbowY: newElbowY, orientation: computeElbowOrientation(si, newElbowX, newElbowY) };
-        }
-        if (props) {
-          itemOverrideRef.current = { id: si.id, props };
-          if (drawBgRef.current) drawBgRef.current();
-        }
-      }
+      // Snapshot the latest touch positions and defer gesture application to rAF.
+      pendingTouchesRef.current = snapshotTouches(e);
+      scheduleTouchFrame();
     }
-  }, [applyTransform, updateDisplays]);
+  }, [scheduleTouchFrame]);
 
   const handleTouchEnd = useCallback((e) => {
     if (!touchRef.current) return;
+
+    // Flush any pending rAF-coalesced frame so the final touch position is applied
+    // before we commit gesture results to React state.
+    if (rafIdRef.current) {
+      cancelAnimationFrame(rafIdRef.current);
+      rafIdRef.current = 0;
+    }
+    if (pendingTouchesRef.current) flushTouchFrame();
 
     // Always cancel any pending long-press
     if (longPressTimerRef.current) {
@@ -327,7 +375,7 @@ export function useTouchInput({
         }
       }
     }
-  }, [scheduleSave]);
+  }, [scheduleSave, flushTouchFrame]);
 
   // Register touch listeners on canvas
   useEffect(() => {
@@ -340,6 +388,11 @@ export function useTouchInput({
       canvas.removeEventListener("touchstart", handleTouchStart);
       canvas.removeEventListener("touchmove", handleTouchMove);
       canvas.removeEventListener("touchend", handleTouchEnd);
+      if (rafIdRef.current) {
+        cancelAnimationFrame(rafIdRef.current);
+        rafIdRef.current = 0;
+      }
+      pendingTouchesRef.current = null;
     };
   }, [loading, handleTouchStart, handleTouchMove, handleTouchEnd]);
 }
