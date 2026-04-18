@@ -3,7 +3,7 @@ import { ZoomInIcon, ZoomOutIcon, GridIcon, HomeIcon, FloppyIcon, UndoIcon, Redo
 
 import { FONT, FONTS, DEFAULT_BG_GRID } from './constants.js';
 import { loadConfiguredFonts } from './fontLibrary.js';
-import { uid, snap, isTyping, pasteItems, migrateItems, applyDragDelta, isGifSrc, isItemFlashEnabled, readLocal, writeLocal, maxZ, minZ } from './utils.js';
+import { uid, snap, isTyping, pasteItems, migrateItems, applyDragDelta, isGifSrc, isItemFlashEnabled, nextFlashTransitionMs, readLocal, writeLocal, maxZ, minZ } from './utils.js';
 import { createBackupZip, restoreFromZip } from './backupRestore.js';
 import { tbBtn, tbSurface, tbSep, togBtn, infoText, panelSurface, UI_BG, UI_BORDER, Z } from './styles.js';
 import { CanvasItem } from './components/CanvasItem.jsx';
@@ -305,14 +305,22 @@ export default function App() {
     if (drawBgRef.current) drawBgRef.current();
   }, [bgGrid, items, selectedIds, globalShadow, editingTextId]);
 
-  // Re-render at a steady cadence while flash visibility is enabled on any item.
+  // Re-render only at each flash visibility transition. A fixed 30fps polling
+  // loop triggered full redraws every frame even when no visibility actually
+  // changed; now the next tick is scheduled at the exact next on/off flip.
   useEffect(() => {
-    const hasFlashingItems = items.some(isItemFlashEnabled);
-    if (!hasFlashingItems) return;
-    const timer = setInterval(() => {
-      if (drawBgRef.current) drawBgRef.current();
-    }, 33);
-    return () => clearInterval(timer);
+    if (!items.some(isItemFlashEnabled)) return;
+    let timeoutId;
+    const schedule = () => {
+      const delay = nextFlashTransitionMs(itemsRef.current);
+      if (!Number.isFinite(delay)) return;
+      timeoutId = setTimeout(() => {
+        if (drawBgRef.current) drawBgRef.current();
+        schedule();
+      }, Math.max(1, delay));
+    };
+    schedule();
+    return () => clearTimeout(timeoutId);
   }, [items]);
 
   // Re-render on viewport container resize
