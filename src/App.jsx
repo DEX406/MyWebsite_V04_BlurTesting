@@ -3,7 +3,7 @@ import { ZoomInIcon, ZoomOutIcon, GridIcon, HomeIcon, FloppyIcon, UndoIcon, Redo
 
 import { FONT, FONTS, DEFAULT_BG_GRID } from './constants.js';
 import { loadConfiguredFonts } from './fontLibrary.js';
-import { uid, snap, isTyping, pasteItems, migrateItems, applyDragDelta, isGifSrc, isItemFlashEnabled, readLocal, writeLocal, maxZ, minZ } from './utils.js';
+import { uid, snap, isTyping, pasteItems, migrateItems, applyDragDelta, isGifSrc, isItemFlashEnabled, nextFlashTransitionMs, readLocal, writeLocal, maxZ, minZ } from './utils.js';
 import { createBackupZip, restoreFromZip } from './backupRestore.js';
 import { tbBtn, tbSurface, tbSep, togBtn, infoText, panelSurface, UI_BG, UI_BORDER, Z } from './styles.js';
 import { CanvasItem } from './components/CanvasItem.jsx';
@@ -94,13 +94,17 @@ export default function App() {
     if (!container) return;
 
     const mediaOverlays = overlays.filter(o => o.type !== 'blur-video');
-    const blurVideoOverlays = overlays.filter(o => o.type === 'blur-video');
+    // Only visible blur items contribute to the shared backdrop clip mask.
+    const blurVideoOverlays = overlays.filter(o => o.type === 'blur-video' && o.visible !== false);
 
     // ── Regular media overlays (videos/GIFs — behind canvas) ──
+    // Elements stay mounted across flash on/off cycles; visibility is toggled
+    // via CSS. Tearing down <video>/<img> nodes each cycle was the source of
+    // the flash stutter (decoder restart, layout reflow, image redecode).
     const activeIds = new Set(mediaOverlays.map(o => o.id));
     const els = overlayElsRef.current;
 
-    // Remove stale elements
+    // Remove elements for items that are truly gone (deleted, type-changed)
     for (const [id, el] of els) {
       if (!activeIds.has(id)) {
         if (el.tagName === 'VIDEO') { el.pause(); el.src = ''; }
@@ -148,6 +152,8 @@ export default function App() {
       const rot = o.rotation ? ` rotate(${o.rotation}deg)` : '';
       el.style.transform = rot;
       el.style.transformOrigin = 'center center';
+      // Flash visibility — keeps layout stable, no decoder teardown
+      el.style.visibility = o.visible === false ? 'hidden' : 'visible';
     }
 
     // ── Shared blur backdrop overlay ──
@@ -299,14 +305,22 @@ export default function App() {
     if (drawBgRef.current) drawBgRef.current();
   }, [bgGrid, items, selectedIds, globalShadow, editingTextId]);
 
-  // Re-render at a steady cadence while flash visibility is enabled on any item.
+  // Re-render only at each flash visibility transition. A fixed 30fps polling
+  // loop triggered full redraws every frame even when no visibility actually
+  // changed; now the next tick is scheduled at the exact next on/off flip.
   useEffect(() => {
-    const hasFlashingItems = items.some(isItemFlashEnabled);
-    if (!hasFlashingItems) return;
-    const timer = setInterval(() => {
-      if (drawBgRef.current) drawBgRef.current();
-    }, 33);
-    return () => clearInterval(timer);
+    if (!items.some(isItemFlashEnabled)) return;
+    let timeoutId;
+    const schedule = () => {
+      const delay = nextFlashTransitionMs(itemsRef.current);
+      if (!Number.isFinite(delay)) return;
+      timeoutId = setTimeout(() => {
+        if (drawBgRef.current) drawBgRef.current();
+        schedule();
+      }, Math.max(1, delay));
+    };
+    schedule();
+    return () => clearTimeout(timeoutId);
   }, [items]);
 
   // Re-render on viewport container resize

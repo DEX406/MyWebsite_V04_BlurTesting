@@ -351,9 +351,8 @@ export class GPURenderer {
       } else {
         if (item.x + item.w < vpLeft || item.x > vpRight || item.y + item.h < vpTop || item.y > vpBottom) continue;
         const qs = quadDraws.length;
-        if (isItemVisibleAtTime(item, now)) {
-          this._collectItem(item, panDpr, panDprY, zoomDpr, resW, resH, globalShadow, editingTextId, quadDraws);
-        }
+        const visible = isItemVisibleAtTime(item, now);
+        this._collectItem(item, panDpr, panDprY, zoomDpr, resW, resH, globalShadow, editingTextId, quadDraws, visible);
         // Selection outline immediately after the item (same z-layer)
         if (selSet.has(item.id)) {
           this._collectSelection(item, panDpr, panDprY, zoomDpr, resW, resH, quadDraws);
@@ -669,7 +668,7 @@ export class GPURenderer {
 
   // ── Collect draw commands ──────────────────────────────────────────────────
 
-  _collectItem(item, panX, panY, zoom, resW, resH, globalShadow, editingTextId, draws) {
+  _collectItem(item, panX, panY, zoom, resW, resH, globalShadow, editingTextId, draws, visible = true) {
     if (editingTextId === item.id && item.type !== 'text' && item.type !== 'link') return;
 
     const hasShadow = globalShadow?.enabled && this._itemShadowEnabled(item);
@@ -715,50 +714,54 @@ export class GPURenderer {
     if (item.bgBlur) {
       const blurTex = this._blurTextures.get(item.id);
       if (blurTex) {
-        // Pass 1: shadow + border quad (full opacity, transparent fill)
-        u[33] = 0; u.set([0, 0, 0, 0], 16);
-        draws.push({ uniforms: new Float32Array(u), texBindGroup: this._fallbackTexBG, isMatte: false });
+        if (visible) {
+          // Pass 1: shadow + border quad (full opacity, transparent fill)
+          u[33] = 0; u.set([0, 0, 0, 0], 16);
+          draws.push({ uniforms: new Float32Array(u), texBindGroup: this._fallbackTexBG, isMatte: false });
 
-        // Pass 2: matte cutout at blur element bounds (always full punch-through)
-        const mu = new Float32Array(44);
-        mu[0] = resW; mu[1] = resH;
-        mu[2] = panX; mu[3] = panY;
-        mu[4] = zoom;
-        mu[5] = (item.rotation || 0) * DEG_TO_RAD;
-        mu[6] = item.radius ?? 2;
-        mu[7] = 1.0;
-        mu[8] = item.x; mu[9] = item.y;
-        mu[10] = item.w; mu[11] = item.h;
-        mu[12] = item.w + 2; mu[13] = item.h + 2;
-        mu[14] = 1; mu[15] = 1;
-        draws.push({ uniforms: mu, texBindGroup: this._fallbackTexBG, isMatte: true });
+          // Pass 2: matte cutout at blur element bounds (always full punch-through)
+          const mu = new Float32Array(44);
+          mu[0] = resW; mu[1] = resH;
+          mu[2] = panX; mu[3] = panY;
+          mu[4] = zoom;
+          mu[5] = (item.rotation || 0) * DEG_TO_RAD;
+          mu[6] = item.radius ?? 2;
+          mu[7] = 1.0;
+          mu[8] = item.x; mu[9] = item.y;
+          mu[10] = item.w; mu[11] = item.h;
+          mu[12] = item.w + 2; mu[13] = item.h + 2;
+          mu[14] = 1; mu[15] = 1;
+          draws.push({ uniforms: mu, texBindGroup: this._fallbackTexBG, isMatte: true });
 
-        // Pass 3: blur texture quad (always full opacity)
-        const bu = new Float32Array(u);
-        bu[12] = item.w; bu[13] = item.h;
-        bu[14] = 0; bu[15] = 0;
-        bu[33] = 1; // textured
-        bu[34] = 0; // no shadow
-        bu.set([1, 1, 1, 1], 16);
-        bu[20] = 0; bu[21] = 0; bu[22] = 1; bu[23] = 1;
-        const blurTexBG = this._getTexBindGroup(blurTex.view, this.texCache.linearSampler);
-        draws.push({ uniforms: bu, texBindGroup: blurTexBG, isMatte: false });
+          // Pass 3: blur texture quad (always full opacity)
+          const bu = new Float32Array(u);
+          bu[12] = item.w; bu[13] = item.h;
+          bu[14] = 0; bu[15] = 0;
+          bu[33] = 1; // textured
+          bu[34] = 0; // no shadow
+          bu.set([1, 1, 1, 1], 16);
+          bu[20] = 0; bu[21] = 0; bu[22] = 1; bu[23] = 1;
+          const blurTexBG = this._getTexBindGroup(blurTex.view, this.texCache.linearSampler);
+          draws.push({ uniforms: bu, texBindGroup: blurTexBG, isMatte: false });
 
-        // Pass 4: colored fill overlay (bgColor at bgOpacity — the only thing opacity controls)
-        const bgColor = this._getBgColor(item);
-        if (bgColor[3] > 0) {
-          const fu = new Float32Array(u);
-          fu[12] = item.w; fu[13] = item.h;
-          fu[14] = 0; fu[15] = 0;
-          fu[33] = 0; fu[34] = 0;
-          fu.set(bgColor, 16);
-          const noiseOpacity = item.noiseEnabled ? (item.noiseOpacity ?? 0.2) : 0;
-          fu[39] = noiseOpacity;
-          fu[40] = noiseOpacity > 0 ? 1 : 0;
-          draws.push({ uniforms: fu, texBindGroup: this._fallbackTexBG, isMatte: false });
+          // Pass 4: colored fill overlay (bgColor at bgOpacity — the only thing opacity controls)
+          const bgColor = this._getBgColor(item);
+          if (bgColor[3] > 0) {
+            const fu = new Float32Array(u);
+            fu[12] = item.w; fu[13] = item.h;
+            fu[14] = 0; fu[15] = 0;
+            fu[33] = 0; fu[34] = 0;
+            fu.set(bgColor, 16);
+            const noiseOpacity = item.noiseEnabled ? (item.noiseOpacity ?? 0.2) : 0;
+            fu[39] = noiseOpacity;
+            fu[40] = noiseOpacity > 0 ? 1 : 0;
+            draws.push({ uniforms: fu, texBindGroup: this._fallbackTexBG, isMatte: false });
+          }
         }
 
-        // CSS backdrop-filter overlay for live media blurring (always full opacity)
+        // CSS backdrop-filter overlay for live media blurring. Push the entry
+        // even when flash-hidden so the DOM element stays mounted; syncOverlays
+        // toggles visibility instead of remounting.
         const mediaBehind = this._findMediaBehind(item);
         if (mediaBehind.length > 0) {
           this._overlays.push({
@@ -771,21 +774,24 @@ export class GPURenderer {
             z: item.z,
             opacity: 1,
             blurRadius: 12,
+            visible,
           });
         }
 
-        // Pass 5: text glyph overlay (full opacity)
-        if ((item.type === 'text' || item.type === 'link') && editingTextId !== item.id) {
-          const entry = this.textRenderer.get(item);
-          const textRgba = hexToRgba(item.color || '#C2C0B6');
-          const tu = new Float32Array(u);
-          tu[12] = item.w; tu[13] = item.h;
-          tu[14] = 0; tu[15] = 0;
-          tu[33] = 0; tu[34] = 0; tu[38] = 1;
-          tu[39] = 0; tu[40] = 0;
-          tu.set(textRgba, 28);
-          const textTexBG = this._getTexBindGroup(entry.view, this.textRenderer.sampler);
-          draws.push({ uniforms: tu, texBindGroup: textTexBG, isMatte: false });
+        if (visible) {
+          // Pass 5: text glyph overlay (full opacity)
+          if ((item.type === 'text' || item.type === 'link') && editingTextId !== item.id) {
+            const entry = this.textRenderer.get(item);
+            const textRgba = hexToRgba(item.color || '#C2C0B6');
+            const tu = new Float32Array(u);
+            tu[12] = item.w; tu[13] = item.h;
+            tu[14] = 0; tu[15] = 0;
+            tu[33] = 0; tu[34] = 0; tu[38] = 1;
+            tu[39] = 0; tu[40] = 0;
+            tu.set(textRgba, 28);
+            const textTexBG = this._getTexBindGroup(entry.view, this.textRenderer.sampler);
+            draws.push({ uniforms: tu, texBindGroup: textTexBG, isMatte: false });
+          }
         }
         return;
       }
@@ -798,28 +804,33 @@ export class GPURenderer {
       if (isMedia) {
         // ── Media item (video/GIF): shadow/border quad + matte cutout ──
         // Content rendered via DOM overlay, not GPU texture.
-        u[33] = 0; // not textured
-        u.set([0, 0, 0, 0], 16); // transparent content (shadow/border only)
+        if (visible) {
+          u[33] = 0; // not textured
+          u.set([0, 0, 0, 0], 16); // transparent content (shadow/border only)
 
-        // Pass 1: shadow + border (normal blend)
-        draws.push({ uniforms: new Float32Array(u), texBindGroup: this._fallbackTexBG, isMatte: false });
+          // Pass 1: shadow + border (normal blend)
+          draws.push({ uniforms: new Float32Array(u), texBindGroup: this._fallbackTexBG, isMatte: false });
 
-        // Pass 2: matte cutout (erases framebuffer inside rounded rect)
-        const mu = new Float32Array(44);
-        mu[0] = resW; mu[1] = resH;
-        mu[2] = panX; mu[3] = panY;
-        mu[4] = zoom;
-        mu[5] = (item.rotation || 0) * DEG_TO_RAD;
-        mu[6] = item.radius ?? 2;
-        mu[7] = 1.0; // opacity
-        mu[8] = item.x; mu[9] = item.y;
-        mu[10] = item.w; mu[11] = item.h;
-        // No shadow padding for the matte — just 1px AA margin
-        mu[12] = item.w + 2; mu[13] = item.h + 2;
-        mu[14] = 1; mu[15] = 1;
-        draws.push({ uniforms: mu, texBindGroup: this._fallbackTexBG, isMatte: true });
+          // Pass 2: matte cutout (erases framebuffer inside rounded rect)
+          const mu = new Float32Array(44);
+          mu[0] = resW; mu[1] = resH;
+          mu[2] = panX; mu[3] = panY;
+          mu[4] = zoom;
+          mu[5] = (item.rotation || 0) * DEG_TO_RAD;
+          mu[6] = item.radius ?? 2;
+          mu[7] = 1.0; // opacity
+          mu[8] = item.x; mu[9] = item.y;
+          mu[10] = item.w; mu[11] = item.h;
+          // No shadow padding for the matte — just 1px AA margin
+          mu[12] = item.w + 2; mu[13] = item.h + 2;
+          mu[14] = 1; mu[15] = 1;
+          draws.push({ uniforms: mu, texBindGroup: this._fallbackTexBG, isMatte: true });
+        }
 
-        // Record overlay data for DOM element positioning
+        // Record overlay data for DOM element positioning. Push even when
+        // flash-hidden so the <video>/<img> element stays mounted and its
+        // decoder doesn't tear down every cycle — syncOverlays toggles
+        // visibility via CSS instead.
         this._overlays.push({
           id: item.id,
           type: item.type === 'video' ? 'video' : 'gif',
@@ -829,11 +840,13 @@ export class GPURenderer {
           rotation: item.rotation || 0,
           radius: item.radius ?? 2,
           z: item.z,
+          visible,
         });
         return;
       }
 
       // ── Static image — GPU texture path ──
+      if (!visible) return;
       const target = item.targetSrc || item.displaySrc || item.src;
       const allTiers = [item.src, item.srcQ50, item.srcQ25, item.srcQ12, item.srcQ6];
       const seen = new Set();
@@ -851,6 +864,7 @@ export class GPURenderer {
       u.set(isReady ? [1, 1, 1, 1] : [0, 0, 0, 0], 16);
       texView = entry.view;
     } else if (item.type === 'text' || item.type === 'link') {
+      if (!visible) return;
       const isEditing = editingTextId === item.id;
       const bgColor = this._getBgColor(item);
 
@@ -880,6 +894,7 @@ export class GPURenderer {
       }
       return;
     } else if (item.type === 'shape') {
+      if (!visible) return;
       u[33] = 0;
       u.set(this._getBgColor(item), 16);
       const noiseOpacity = item.noiseEnabled ? (item.noiseOpacity ?? 0.2) : 0;
