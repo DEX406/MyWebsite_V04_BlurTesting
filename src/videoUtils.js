@@ -73,8 +73,6 @@ export function convertVideoToWebm(file, onProgress) {
         reject(e.error || new Error('Recording failed'));
       };
 
-      recorder.start(100); // collect data every 100ms
-
       const drawFrame = () => {
         if (video.ended || video.paused) {
           if (recorder.state === 'recording') recorder.stop();
@@ -92,12 +90,29 @@ export function convertVideoToWebm(file, onProgress) {
         if (recorder.state === 'recording') recorder.stop();
       };
 
-      video.play().then(() => {
-        drawFrame();
-      }).catch(err => {
-        cleanup();
-        reject(err);
-      });
+      // Wait for the first decoded frame before starting the recorder.
+      // Otherwise captureStream samples the empty canvas and the output WebM
+      // begins with a black frame, which flashes every time the loop restarts.
+      const waitForFirstFrame = () =>
+        new Promise(res => {
+          if ('requestVideoFrameCallback' in video) {
+            video.requestVideoFrameCallback(() => res());
+          } else {
+            requestAnimationFrame(() => res());
+          }
+        });
+
+      video.play()
+        .then(waitForFirstFrame)
+        .then(() => {
+          ctx.drawImage(video, 0, 0, w, h);
+          recorder.start(100); // collect data every 100ms
+          drawFrame();
+        })
+        .catch(err => {
+          cleanup();
+          reject(err);
+        });
     };
 
     video.onerror = () => {
