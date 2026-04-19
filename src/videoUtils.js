@@ -43,7 +43,15 @@ export function convertVideoToWebm(file, onProgress) {
       canvas.height = h;
       const ctx = canvas.getContext('2d');
 
-      const stream = canvas.captureStream(30);
+      // Frame-synchronous capture: passing 0 means "do not sample the canvas
+      // on a timer". Every frame in the output comes from an explicit
+      // requestFrame() call, so an un-drawn or stale canvas can never leak
+      // into the WebM as a black/empty frame.
+      const stream = canvas.captureStream(0);
+      const track = stream.getVideoTracks()[0];
+      const emitFrame = () => {
+        if (track && typeof track.requestFrame === 'function') track.requestFrame();
+      };
 
       // Pick best available codec
       const mimeType = ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm']
@@ -73,29 +81,44 @@ export function convertVideoToWebm(file, onProgress) {
         reject(e.error || new Error('Recording failed'));
       };
 
-      const drawFrame = () => {
-        if (video.ended || video.paused) {
-          if (recorder.state === 'recording') recorder.stop();
-          return;
-        }
-        ctx.drawImage(video, 0, 0, w, h);
-        if (onProgress && video.duration) {
-          onProgress(video.currentTime / video.duration);
-        }
-        requestAnimationFrame(drawFrame);
-      };
-
-      video.onended = () => {
-        ctx.drawImage(video, 0, 0, w, h);
+      let stopped = false;
+      const stopRecording = () => {
+        if (stopped) return;
+        stopped = true;
         if (recorder.state === 'recording') recorder.stop();
       };
 
-      // Wait for the first decoded frame before starting the recorder.
-      // Otherwise captureStream samples the empty canvas and the output WebM
-      // begins with a black frame, which flashes every time the loop restarts.
+      // Prefer requestVideoFrameCallback so we draw exactly the frames the
+      // decoder produced, in their own order, with no duplication or drops.
+      // Fall back to rAF for browsers without rVFC.
+      const hasRvfc = 'requestVideoFrameCallback' in video;
+
+      const onDecodedFrame = () => {
+        if (video.ended || video.paused) {
+          stopRecording();
+          return;
+        }
+        ctx.drawImage(video, 0, 0, w, h);
+        emitFrame();
+        if (onProgress && video.duration) {
+          onProgress(video.currentTime / video.duration);
+        }
+        if (hasRvfc) {
+          video.requestVideoFrameCallback(onDecodedFrame);
+        } else {
+          requestAnimationFrame(onDecodedFrame);
+        }
+      };
+
+      // Do NOT draw inside onended: once the video has ended the decoded
+      // frame buffer may have been cleared, so drawImage would paint a black
+      // frame onto the canvas as the last thing recorded — which is exactly
+      // what produced the black flash on loop.
+      video.onended = () => stopRecording();
+
       const waitForFirstFrame = () =>
         new Promise(res => {
-          if ('requestVideoFrameCallback' in video) {
+          if (hasRvfc) {
             video.requestVideoFrameCallback(() => res());
           } else {
             requestAnimationFrame(() => res());
@@ -107,7 +130,14 @@ export function convertVideoToWebm(file, onProgress) {
         .then(() => {
           ctx.drawImage(video, 0, 0, w, h);
           recorder.start(100); // collect data every 100ms
-          drawFrame();
+          // Emit the first frame explicitly so the encoder has a real
+          // keyframe at t=0 instead of the default (black) canvas.
+          emitFrame();
+          if (hasRvfc) {
+            video.requestVideoFrameCallback(onDecodedFrame);
+          } else {
+            requestAnimationFrame(onDecodedFrame);
+          }
         })
         .catch(err => {
           cleanup();
