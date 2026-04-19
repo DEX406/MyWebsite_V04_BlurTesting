@@ -23,6 +23,83 @@ import { useWebGLCanvas } from './hooks/useWebGLCanvas.js';
 
 const DEFAULT_PALETTE = ["#C2C0B6", "#30302E", "#262624", "#141413", "#FE8181", "#D97757", "#65BB30", "#2C84DB", "#9B87F5"];
 const COLOR_PROPS = ["color", "bgColor", "borderColor", "lineColor", "dotColor"];
+
+// Seconds before the current video's end at which we hand off to its twin.
+// Needs to be long enough for the twin's first frame to be decoded and
+// composited before the current one runs out.
+const LOOP_SWAP_LEAD = 0.12;
+
+function makeLoopVideo(src) {
+  const v = document.createElement('video');
+  v.crossOrigin = 'anonymous';
+  v.muted = true;
+  v.playsInline = true;
+  v.preload = 'auto';
+  v.loop = false;
+  v.src = src;
+  v.style.cssText = 'position:absolute;top:0;left:0;width:100%;height:100%;object-fit:cover;border-radius:inherit;';
+  return v;
+}
+
+function setupVideoLoop(el, src) {
+  el._videoSrc = src;
+  const a = makeLoopVideo(src);
+  const b = makeLoopVideo(src);
+  a.style.opacity = '1';
+  b.style.opacity = '0';
+  el.appendChild(a);
+  el.appendChild(b);
+  el._videos = [a, b];
+
+  const arm = (active, inactive) => {
+    let swapped = false;
+    const onTime = () => {
+      if (swapped) return;
+      const d = active.duration;
+      if (!d || !isFinite(d)) return;
+      if (d - active.currentTime > LOOP_SWAP_LEAD) return;
+      swapped = true;
+      active.removeEventListener('timeupdate', onTime);
+      try { inactive.currentTime = 0; } catch {}
+      const playPromise = inactive.play();
+      const doSwap = () => {
+        inactive.style.opacity = '1';
+        active.style.opacity = '0';
+        active.pause();
+        try { active.currentTime = 0; } catch {}
+        arm(inactive, active);
+      };
+      // Swap on the inactive video's first painted frame so there is never a
+      // gap between the last frame of `active` and the first of `inactive`.
+      if ('requestVideoFrameCallback' in inactive) {
+        inactive.requestVideoFrameCallback(doSwap);
+      } else if (playPromise && playPromise.then) {
+        playPromise.then(doSwap).catch(doSwap);
+      } else {
+        doSwap();
+      }
+    };
+    active.addEventListener('timeupdate', onTime);
+    active._loopTimeHandler = onTime;
+  };
+
+  a.play().catch(() => {});
+  arm(a, b);
+}
+
+function teardownVideoLoop(el) {
+  if (!el || !el._videos) return;
+  for (const v of el._videos) {
+    if (v._loopTimeHandler) v.removeEventListener('timeupdate', v._loopTimeHandler);
+    v.pause();
+    v.src = '';
+    v.removeAttribute('src');
+    v.load();
+    v.remove();
+  }
+  el._videos = null;
+  el._videoSrc = null;
+}
 // ── App ──
 export default function App() {
   const [items, setItems] = useState([]);
@@ -107,7 +184,7 @@ export default function App() {
     // Remove elements for items that are truly gone (deleted, type-changed)
     for (const [id, el] of els) {
       if (!activeIds.has(id)) {
-        if (el.tagName === 'VIDEO') { el.pause(); el.src = ''; }
+        teardownVideoLoop(el);
         el.remove();
         els.delete(id);
       }
@@ -118,26 +195,29 @@ export default function App() {
       let el = els.get(o.id);
       if (!el) {
         if (o.type === 'video') {
-          el = document.createElement('video');
-          el.crossOrigin = 'anonymous';
-          el.autoplay = true;
-          el.loop = true;
-          el.muted = true;
-          el.playsInline = true;
-          el.src = o.src;
-          el.play().catch(() => {});
+          // Double-buffered seamless loop: two <video> elements alternate so
+          // the active one never needs to seek back to 0. Native `loop=true`
+          // causes a black flash on the loop boundary because the decoder
+          // pauses during the seek; swapping to a pre-rolled twin avoids that.
+          el = document.createElement('div');
+          el.dataset.type = 'video';
+          setupVideoLoop(el, o.src);
         } else {
           el = document.createElement('img');
           el.crossOrigin = 'anonymous';
           el.src = o.src;
         }
-        el.style.cssText = 'position:absolute;top:0;left:0;pointer-events:none;object-fit:cover;transform-origin:center center;image-rendering:pixelated;';
+        el.style.cssText = 'position:absolute;top:0;left:0;pointer-events:none;object-fit:cover;transform-origin:center center;image-rendering:pixelated;overflow:hidden;';
         container.appendChild(el);
         els.set(o.id, el);
       }
-      if (el.src !== o.src && o.src) {
+      if (el.dataset && el.dataset.type === 'video') {
+        if (el._videoSrc !== o.src && o.src) {
+          teardownVideoLoop(el);
+          setupVideoLoop(el, o.src);
+        }
+      } else if (el.src !== o.src && o.src) {
         el.src = o.src;
-        if (el.tagName === 'VIDEO') el.play().catch(() => {});
       }
       const screenX = o.x * zoom + panX;
       const screenY = o.y * zoom + panY;
@@ -252,7 +332,7 @@ export default function App() {
   useEffect(() => {
     return () => {
       for (const el of overlayElsRef.current.values()) {
-        if (el.tagName === 'VIDEO') { el.pause(); el.src = ''; }
+        teardownVideoLoop(el);
         el.remove();
       }
       overlayElsRef.current.clear();
