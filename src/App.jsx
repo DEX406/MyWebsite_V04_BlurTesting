@@ -13,6 +13,7 @@ import { ColorPickerPopup } from './components/ColorPickerPopup.jsx';
 import { LoginModal } from './components/LoginModal.jsx';
 import { loadBoard, saveBoard, cleanupFiles, uploadImage, uploadVideo, login, logout, hasToken, getBackupManifest, restoreImageKey, downloadImageViaProxy, serverResize } from './api.js';
 import { convertVideoToWebm, isVideoFile } from './videoUtils.js';
+import { BlurFrameSync } from './blurFrameSync.js';
 import { useViewport } from './hooks/useViewport.js';
 import { useKeyboard } from './hooks/useKeyboard.js';
 import { usePointerInput } from './hooks/usePointerInput.js';
@@ -88,6 +89,8 @@ export default function App() {
   // ── Blur overlay (single shared CSS backdrop-filter div behind canvas) ──
   const sharedBlurElRef = useRef(null); // one DOM div to avoid blur stacking
   const sharedBlurClipRef = useRef(null); // { svg, clipPath, id }
+  const blurSyncRef = useRef(null); // BlurFrameSync — drives repaints from media frames
+  const blurTickRef = useRef(false); // toggles opacity to force backdrop-filter recomposite
 
   const syncOverlays = useCallback((overlays, panX, panY, zoom) => {
     const container = overlayRef.current;
@@ -163,8 +166,11 @@ export default function App() {
     let sharedEl = sharedBlurElRef.current;
 
     if (!blurCount) {
+      if (blurSyncRef.current) {
+        blurSyncRef.current.destroy();
+        blurSyncRef.current = null;
+      }
       if (sharedEl) {
-        if (sharedEl._blurRaf) cancelAnimationFrame(sharedEl._blurRaf);
         sharedEl.remove();
         sharedBlurElRef.current = null;
       }
@@ -181,16 +187,33 @@ export default function App() {
       sharedEl.style.cssText = 'position:absolute;top:0;left:0;right:0;bottom:0;pointer-events:none;';
       container.appendChild(sharedEl);
       sharedBlurElRef.current = sharedEl;
-      // rAF loop forces browser to re-composite backdrop-filter every frame,
-      // keeping the blur live over animated GIFs and videos.
-      let tick = false;
-      const repaint = () => {
-        sharedEl.style.opacity = tick ? '1' : '0.999';
-        tick = !tick;
-        sharedEl._blurRaf = requestAnimationFrame(repaint);
-      };
-      sharedEl._blurRaf = requestAnimationFrame(repaint);
     }
+    if (!blurSyncRef.current) {
+      // Toggle opacity by an imperceptible amount to force the browser to
+      // re-composite the backdrop-filter. Driven only when underlying media
+      // commits a new frame (rVFC for video, ImageDecoder timing for GIF).
+      blurSyncRef.current = new BlurFrameSync(() => {
+        const el = sharedBlurElRef.current;
+        if (!el) return;
+        blurTickRef.current = !blurTickRef.current;
+        el.style.opacity = blurTickRef.current ? '1' : '0.999';
+      });
+    }
+
+    // Collect distinct animated media currently under any visible blur, so the
+    // sync only ticks for sources that actually need it.
+    const blurMediaSources = [];
+    const seenSrc = new Set();
+    for (const blur of blurVideoOverlays) {
+      const behind = blur.mediaBehind;
+      if (!behind) continue;
+      for (const m of behind) {
+        if (!m.src || seenSrc.has(m.src)) continue;
+        seenSrc.add(m.src);
+        blurMediaSources.push({ src: m.src, type: m.type, el: els.get(m.id) });
+      }
+    }
+    blurSyncRef.current.setSources(blurMediaSources);
 
     let clip = sharedBlurClipRef.current;
     if (!clip) {
@@ -256,9 +279,12 @@ export default function App() {
         el.remove();
       }
       overlayElsRef.current.clear();
+      if (blurSyncRef.current) {
+        blurSyncRef.current.destroy();
+        blurSyncRef.current = null;
+      }
       const sharedEl = sharedBlurElRef.current;
       if (sharedEl) {
-        if (sharedEl._blurRaf) cancelAnimationFrame(sharedEl._blurRaf);
         sharedEl.remove();
         sharedBlurElRef.current = null;
       }
