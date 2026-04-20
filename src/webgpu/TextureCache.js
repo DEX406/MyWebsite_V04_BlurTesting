@@ -2,7 +2,7 @@
 // Supports FIFO eviction with placeholder protection — low-res placeholders are evicted last.
 // Videos and GIFs are rendered via DOM overlay (not GPU textures) for iOS compatibility.
 
-const MAX_TEXTURES = 200;
+const MAX_TEXTURES = 4096;
 
 export class TextureCache {
   constructor(device, onTextureReady) {
