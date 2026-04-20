@@ -775,6 +775,7 @@ export class GPURenderer {
             opacity: 1,
             blurRadius: 12,
             visible,
+            mediaBehind: mediaBehind.map(m => ({ id: m.id, type: m.type, src: m.src })),
           });
         }
 
