@@ -1,5 +1,5 @@
 // WebGPU texture cache: loads static images from URLs into GPUTextures.
-// Supports FIFO eviction with placeholder protection — low-res placeholders are evicted last.
+// LRU eviction with placeholder protection — low-res placeholders are evicted last.
 // Videos and GIFs are rendered via DOM overlay (not GPU textures) for iOS compatibility.
 
 const MAX_TEXTURES = 4096;
@@ -7,9 +7,8 @@ const MAX_TEXTURES = 4096;
 export class TextureCache {
   constructor(device, onTextureReady) {
     this.device = device;
-    this.cache = new Map(); // url → { tex, view, width, height, ready, isPlaceholder, insertOrder }
+    this.cache = new Map(); // url → { tex, view, width, height, ready, isPlaceholder, lastUsed }
     this.loading = new Set();
-    this.insertCounter = 0;
     this._onTextureReady = onTextureReady || null;
 
     // Samplers (shared across all textures)
@@ -69,19 +68,17 @@ export class TextureCache {
   _evict() {
     let toEvict = this.cache.size - MAX_TEXTURES;
     if (toEvict <= 0) return;
-    // Map iteration order is insertion order, so no sort is needed.
-    // Evict oldest non-placeholders first; placeholders are evicted last so
-    // low-res thumbnails remain on-screen while full-res loads.
-    const placeholders = [];
-    for (const [url, entry] of this.cache) {
-      if (toEvict <= 0) break;
-      if (entry.isPlaceholder) { placeholders.push([url, entry]); continue; }
-      entry.tex.destroy();
-      this.cache.delete(url);
-      toEvict--;
-    }
-    for (let i = 0; i < placeholders.length && toEvict > 0; i++) {
-      const [url, entry] = placeholders[i];
+    // LRU eviction: sort by lastUsed ascending so the least-recently-used entries
+    // are removed first. Placeholders are protected — they only go if all
+    // non-placeholders have already been reclaimed. This keeps on-screen textures
+    // alive even if they were loaded early in the session.
+    const entries = [...this.cache.entries()];
+    entries.sort((a, b) => {
+      if (a[1].isPlaceholder !== b[1].isPlaceholder) return a[1].isPlaceholder ? 1 : -1;
+      return (a[1].lastUsed || 0) - (b[1].lastUsed || 0);
+    });
+    for (let i = 0; i < entries.length && toEvict > 0; i++) {
+      const [url, entry] = entries[i];
       entry.tex.destroy();
       this.cache.delete(url);
       toEvict--;
@@ -91,7 +88,13 @@ export class TextureCache {
   get(url, pixelated = false, isPlaceholder = false) {
     if (!url) return this.transparent;
     const cached = this.cache.get(url);
-    if (cached) return cached;
+    if (cached) {
+      cached.lastUsed = performance.now();
+      // Once promoted to placeholder, keep the flag — protects the lowest tier
+      // regardless of which call path requested it next.
+      if (isPlaceholder) cached.isPlaceholder = true;
+      return cached;
+    }
 
     if (!this.loading.has(url)) {
       this.loading.add(url);
@@ -107,7 +110,7 @@ export class TextureCache {
           height: img.naturalHeight,
           ready: true,
           isPlaceholder,
-          insertOrder: this.insertCounter++,
+          lastUsed: performance.now(),
         };
         this.cache.set(url, entry);
         this._evict();
@@ -120,22 +123,23 @@ export class TextureCache {
     return this.fallback;
   }
 
-  getBestReady(candidates, pixelated = false) {
+  getBestReady(candidates, placeholderUrl, pixelated = false) {
     let bestEntry = null;
     let bestUrl = null;
     for (let i = 0; i < candidates.length; i++) {
       const url = candidates[i];
       if (!url) continue;
       const isFirst = i === 0;
-      const isLast = i === candidates.length - 1;
-      if (isFirst || isLast) {
-        const entry = this.get(url, pixelated, isLast);
+      const isPlaceholder = url === placeholderUrl;
+      if (isFirst || isPlaceholder) {
+        const entry = this.get(url, pixelated, isPlaceholder);
         if (!bestEntry && entry.ready && entry !== this.fallback && entry !== this.transparent) {
           bestEntry = entry;
           bestUrl = url;
         }
       } else {
         const cached = this.cache.get(url);
+        if (cached) cached.lastUsed = performance.now();
         if (!bestEntry && cached && cached.ready) {
           bestEntry = cached;
           bestUrl = url;

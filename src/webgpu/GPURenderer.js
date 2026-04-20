@@ -850,12 +850,13 @@ export class GPURenderer {
       if (!visible) return;
       const target = item.targetSrc || item.displaySrc || item.src;
       const allTiers = [item.src, item.srcQ50, item.srcQ25, item.srcQ12, item.srcQ6];
+      const placeholder = item.srcQ6 || item.srcQ12 || item.srcQ25 || item.srcQ50 || item.src;
       const seen = new Set();
       const candidates = [];
       for (const c of [target, ...allTiers]) {
         if (c && !seen.has(c)) { seen.add(c); candidates.push(c); }
       }
-      const entry = this.texCache.getBestReady(candidates, item.pixelated).entry;
+      const entry = this.texCache.getBestReady(candidates, placeholder, item.pixelated).entry;
       const isReady = entry.ready !== false;
       u[33] = isReady ? 1 : 0;
       const texW = entry.width || item.naturalWidth || item.w;
@@ -1263,12 +1264,13 @@ export class GPURenderer {
       if (item.type !== 'video' && !item.isGif && !isGifSrc(item.src)) {
         const target = item.targetSrc || item.displaySrc || item.src;
         const tiers = [item.src, item.srcQ50, item.srcQ25, item.srcQ12, item.srcQ6];
+        const placeholder = item.srcQ6 || item.srcQ12 || item.srcQ25 || item.srcQ50 || item.src;
         const seen = new Set();
         const candidates = [];
         for (const c of [target, ...tiers]) {
           if (c && !seen.has(c)) { seen.add(c); candidates.push(c); }
         }
-        const entry = this.texCache.getBestReady(candidates, item.pixelated).entry;
+        const entry = this.texCache.getBestReady(candidates, placeholder, item.pixelated).entry;
         if (entry && entry.width > 1) {
           dimW = entry.width;
           dimH = entry.height;
