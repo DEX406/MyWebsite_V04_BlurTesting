@@ -458,7 +458,7 @@ export function PropertiesPanel({ isAdmin, selectedIds, items, openColorPicker, 
             <Section title="Export">
           {type === "image" && (
             <div style={{ display: "flex", gap: GAP }}>
-              {!isMulti && sel.src.startsWith("http") && !sel.src.includes("r2.dev") ? (
+              {!isMulti && sel.src.startsWith("http") && !sel.src.includes("r2.dev") && !sel.src.includes("assets.lutz.work") ? (
                 <Toggle label="Store in R2" active onClick={async () => {
                   setUploadStatus("Storing...");
                   try {
@@ -475,7 +475,7 @@ export function PropertiesPanel({ isAdmin, selectedIds, items, openColorPicker, 
                     onChange={async (e) => {
                       if (!e.target.value) return;
                       const scale = parseInt(e.target.value) / 100;
-                      const r2Images = selectedItems.filter(i => i.type === "image" && !(i.src.startsWith("http") && !i.src.includes("r2.dev")));
+                      const r2Images = selectedItems.filter(i => i.type === "image" && !(i.src.startsWith("http") && !i.src.includes("r2.dev") && !i.src.includes("assets.lutz.work")));
                       if (r2Images.length > 0) await resizeImage(r2Images, scale);
                       e.target.value = "";
                     }}
@@ -518,7 +518,7 @@ export function PropertiesPanel({ isAdmin, selectedIds, items, openColorPicker, 
                 try {
                   const src = item.src;
                   let blob;
-                  if (src.includes('r2.dev')) {
+                  if (src.includes('r2.dev') || src.includes('assets.lutz.work')) {
                     const key = src.replace(/^https?:\/\/[^/]+\//, '');
                     blob = await downloadImageViaProxy(key);
                   } else {

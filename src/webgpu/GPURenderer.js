@@ -1314,7 +1314,7 @@ export class GPURenderer {
 
   _imgSrcType(src) {
     if (!src) return null;
-    if (src.startsWith('http') && !src.includes('r2.dev')) return 'link';
+    if (src.startsWith('http') && !src.includes('r2.dev') && !src.includes('assets.lutz.work')) return 'link';
     return 'stored';
   }
 

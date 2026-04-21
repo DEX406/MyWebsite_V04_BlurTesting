@@ -93,7 +93,7 @@ export function Toolbar({
     const observer = new PerformanceObserver((list) => {
       let count = 0;
       for (const entry of list.getEntries()) {
-        if (entry.name.includes('r2.dev') && entry.duration >= 25) count++;
+        if ((entry.name.includes('r2.dev') || entry.name.includes('assets.lutz.work')) && entry.duration >= 25) count++;
       }
       if (count > 0) {
         const wasIdle = ref.queue === 0;

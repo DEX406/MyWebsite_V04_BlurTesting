@@ -1,6 +1,6 @@
 import { ListObjectsV2Command, DeleteObjectCommand } from '@aws-sdk/client-s3';
 import { verifyAuth } from './_auth.js';
-import { r2, BUCKET, R2_PUBLIC_URL } from './_r2.js';
+import { r2, BUCKET, R2_PUBLIC_URL, R2_LEGACY_URL } from './_r2.js';
 
 
 export default async function handler(req, res) {
@@ -32,12 +32,15 @@ export default async function handler(req, res) {
       continuationToken = listRes.IsTruncated ? listRes.NextContinuationToken : undefined;
     } while (continuationToken);
 
-    // Find objects not in use — no protection, brute-force delete all unused
-    const usedSet = new Set(usedUrls);
-    const toDelete = objects.filter(obj => {
-      const url = `${R2_PUBLIC_URL}/${obj.Key}`;
-      return !usedSet.has(url);
-    });
+    // Normalise used URLs to their R2 key so both old (r2.dev) and new
+    // (assets.lutz.work) URLs match the same bucket object.
+    const usedKeys = new Set();
+    for (const url of usedUrls) {
+      for (const base of [R2_PUBLIC_URL, R2_LEGACY_URL]) {
+        if (url.startsWith(base + '/')) { usedKeys.add(url.slice(base.length + 1)); break; }
+      }
+    }
+    const toDelete = objects.filter(obj => !usedKeys.has(obj.Key));
 
     // Delete unused objects
     let deleted = 0;

@@ -1,7 +1,7 @@
 import sharp from 'sharp';
 import { GetObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3';
 import { verifyAuth } from './_auth.js';
-import { r2, BUCKET, R2_PUBLIC_URL } from './_r2.js';
+import { r2, BUCKET, R2_PUBLIC_URL, R2_LEGACY_URL } from './_r2.js';
 
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -19,9 +19,9 @@ export default async function handler(req, res) {
 
     // Fetch image — from R2 bucket directly or external URL
     let buffer, contentType;
-    const r2Prefix = R2_PUBLIC_URL + '/';
-    if (sourceUrl.startsWith(r2Prefix)) {
-      const key = sourceUrl.slice(r2Prefix.length);
+    const matchedPrefix = [R2_PUBLIC_URL, R2_LEGACY_URL].map(b => b + '/').find(p => sourceUrl.startsWith(p));
+    if (matchedPrefix) {
+      const key = sourceUrl.slice(matchedPrefix.length);
       const obj = await r2.send(new GetObjectCommand({ Bucket: BUCKET, Key: key }));
       buffer = Buffer.from(await obj.Body.transformToByteArray());
       contentType = obj.ContentType || 'image/png';
