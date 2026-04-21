@@ -17,7 +17,6 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: 'sourceUrl and scale required' });
     }
 
-    // Fetch image — from R2 bucket directly or external URL
     let buffer, contentType;
     const r2Prefix = R2_PUBLIC_URL + '/';
     if (sourceUrl.startsWith(r2Prefix)) {
@@ -32,29 +31,39 @@ export default async function handler(req, res) {
       contentType = response.headers.get('content-type') || 'image/png';
     }
 
+    // Detect animation — covers both GIF and animated WebP. Using pages>1 is the
+    // umbrella check; it keeps the existing GIF path working while also
+    // preserving frames for animated WebPs produced by the client-side maker
+    // and the GIF→WebP upload conversion.
+    const probeMeta = await sharp(buffer, { animated: true }).metadata();
+    const isAnimated = (probeMeta.pages || 1) > 1;
     const isGif = contentType === 'image/gif';
 
-    // Resize
     if (scale < 1) {
-      const meta = await sharp(buffer, isGif ? { animated: true } : {}).metadata();
-      let pipeline = sharp(buffer, isGif ? { animated: true } : {})
-        .resize(Math.round(meta.width * scale));
-
+      const srcW = probeMeta.pageWidth || probeMeta.width;
+      const targetW = Math.max(1, Math.round(srcW * scale));
+      let pipeline = sharp(buffer, isAnimated ? { animated: true } : {}).resize(targetW);
       if (isGif) {
-        // GIF stays GIF — preserve animation
         buffer = await pipeline.gif().toBuffer();
+      } else if (isAnimated) {
+        buffer = await pipeline.webp({ lossless: true }).toBuffer();
+        contentType = 'image/webp';
       } else {
-        // Everything else becomes WebP lossless
         buffer = await pipeline.webp({ lossless: true }).toBuffer();
         contentType = 'image/webp';
       }
     } else if (!isGif) {
-      // scale >= 1 but not GIF — still convert to WebP lossless (e.g. Store in R2)
-      buffer = await sharp(buffer).webp({ lossless: true }).toBuffer();
+      // scale >= 1 — re-encode as WebP lossless to store in R2.
+      // CRITICAL: preserve animation for animated sources; without {animated:true}
+      // Sharp flattens the input to the first frame.
+      if (isAnimated) {
+        buffer = await sharp(buffer, { animated: true }).webp({ lossless: true }).toBuffer();
+      } else {
+        buffer = await sharp(buffer).webp({ lossless: true }).toBuffer();
+      }
       contentType = 'image/webp';
     }
 
-    // Determine output extension
     const outExt = isGif ? 'gif' : 'webp';
     const outKey = `canvas/${Date.now()}-resized.${outExt}`;
 

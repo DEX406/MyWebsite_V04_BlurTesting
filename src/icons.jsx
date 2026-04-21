@@ -169,6 +169,17 @@ export const PasteIcon = (p) => (
   <I {...p}><rect x="3" y="5" width="14" height="13" rx="1.5" /><path d="M7 5V3.5A1.5 1.5 0 0 1 8.5 2h3A1.5 1.5 0 0 1 13 3.5V5M7 10h6M7 13h4" /></I>
 );
 
+export const FilmStripIcon = (p) => (
+  <I {...p}>
+    {/* Filmstrip body with rounded corners, and four sprocket holes down
+        each side. Matches the outlined, round-capped language of the set. */}
+    <rect x="3" y="2" width="14" height="16" rx="1.5" />
+    <path d="M3 6h14M3 14h14" />
+    <path d="M5.5 3.5v1M8.5 3.5v1M11.5 3.5v1M14.5 3.5v1" />
+    <path d="M5.5 15.5v1M8.5 15.5v1M11.5 15.5v1M14.5 15.5v1" />
+  </I>
+);
+
 export const PaletteIcon = (p) => (
   <I {...p}>
     <path d="M2 10a8 8 0 1 0 16 0A8 8 0 0 0 2 10" />
