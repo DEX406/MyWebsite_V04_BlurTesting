@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { FONT, FONTS } from '../constants.js';
+import { FONT, FONTS, isR2Url } from '../constants.js';
 import { itemShadowEnabled } from '../utils.js';
 import { uploadImage, serverResize, downloadImageViaProxy } from '../api.js';
 import { ChevronUpIcon, ChevronDownIcon } from '../icons.jsx';
@@ -459,7 +459,7 @@ export function PropertiesPanel({ isAdmin, selectedIds, items, openColorPicker, 
             <Section title="Export">
           {type === "image" && (
             <div style={{ display: "flex", gap: GAP }}>
-              {!isMulti && sel.src.startsWith("http") && !sel.src.includes("r2.dev") ? (
+              {!isMulti && sel.src.startsWith("http") && !isR2Url(sel.src) ? (
                 <Toggle label="Store in R2" active onClick={async () => {
                   setUploadStatus("Storing...");
                   try {
@@ -474,7 +474,7 @@ export function PropertiesPanel({ isAdmin, selectedIds, items, openColorPicker, 
                   value=""
                   sourceLongEdge={Math.max(sel.naturalWidth || sel.w || 0, sel.naturalHeight || sel.h || 0)}
                   onChange={async (val) => {
-                    const r2Images = selectedItems.filter(i => i.type === "image" && !(i.src.startsWith("http") && !i.src.includes("r2.dev")));
+                    const r2Images = selectedItems.filter(i => i.type === "image" && !(i.src.startsWith("http") && !isR2Url(i.src)));
                     if (!r2Images.length) return;
                     // Resolve scale per-item so pixel presets respect each image's own long edge.
                     for (const item of r2Images) {
@@ -517,7 +517,7 @@ export function PropertiesPanel({ isAdmin, selectedIds, items, openColorPicker, 
                 try {
                   const src = item.src;
                   let blob;
-                  if (src.includes('r2.dev')) {
+                  if (isR2Url(src)) {
                     const key = src.replace(/^https?:\/\/[^/]+\//, '');
                     blob = await downloadImageViaProxy(key);
                   } else {

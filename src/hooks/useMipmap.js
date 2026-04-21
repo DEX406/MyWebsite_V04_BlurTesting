@@ -1,6 +1,7 @@
 import { useEffect, useRef, useCallback, useState } from 'react';
 import { generateMipmaps } from '../api.js';
 import { isGifSrc, isSvgSrc } from '../utils.js';
+import { isR2Url } from '../constants.js';
 
 // Track in-flight mipmap generation requests globally to avoid duplicates
 const pendingGenerations = new Set();
@@ -40,7 +41,7 @@ export function useMipmap(items, updateItem, vp) {
     const eligible = images.filter(i => !isGifSrc(i.src) && !isSvgSrc(i.src));
 
     // Only process R2-hosted images
-    const r2Images = eligible.filter(i => i.src.includes('r2.dev'));
+    const r2Images = eligible.filter(i => isR2Url(i.src));
 
     for (const item of r2Images) {
       pendingGenerations.add(item.src);

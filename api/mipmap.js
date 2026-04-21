@@ -1,7 +1,7 @@
 import sharp from 'sharp';
 import { GetObjectCommand, PutObjectCommand, HeadObjectCommand } from '@aws-sdk/client-s3';
 import { verifyAuth } from './_auth.js';
-import { r2, BUCKET, R2_PUBLIC_URL } from './_r2.js';
+import { r2, BUCKET, R2_PUBLIC_URL, extractR2Key } from './_r2.js';
 
 // Suffixes appended before the file extension
 const VARIANTS = [
@@ -39,13 +39,12 @@ export default async function handler(req, res) {
     const { src } = req.body;
     if (!src) return res.status(400).json({ error: 'src required' });
 
-    // Only process R2-hosted images
-    const r2Prefix = R2_PUBLIC_URL + '/';
-    if (!src.startsWith(r2Prefix)) {
+    // Only process R2-hosted images (accepts current + legacy public URL).
+    const key = extractR2Key(src);
+    if (!key) {
       return res.status(200).json({ src, srcQ50: null, srcQ25: null, srcQ12: null, srcQ6: null });
     }
 
-    const key = src.slice(r2Prefix.length);
     const ext = key.split('.').pop().toLowerCase();
 
     // Skip GIF and SVG

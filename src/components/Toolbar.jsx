@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { FONT, SHAPE_PRESETS, GRID_SPACINGS } from '../constants.js';
+import { FONT, SHAPE_PRESETS, GRID_SPACINGS, isR2Url } from '../constants.js';
 import { tbBtn, tbSurface, togBtn, dropdownSurface, Z } from '../styles.js';
 import {
   PlusIcon, LockIcon, TrashIcon, SunIcon, PaletteIcon,
@@ -100,7 +100,7 @@ export function Toolbar({
     const observer = new PerformanceObserver((list) => {
       let count = 0;
       for (const entry of list.getEntries()) {
-        if (entry.name.includes('r2.dev') && entry.duration >= 25) count++;
+        if (isR2Url(entry.name) && entry.duration >= 25) count++;
       }
       if (count > 0) {
         const wasIdle = ref.queue === 0;
