@@ -27,11 +27,8 @@ export const TEXT_DEFAULT_SIZE = 24; // default fontSize (px)
 
 export const FONTS = CUSTOM_FONTS;
 
-// Hosts whose URLs are treated as "stored on our R2" (vs external links).
-// Covers the current custom domain plus the legacy pub-*.r2.dev origin so
-// previously saved URLs keep resolving correctly.
-const R2_HOSTS = ['assets.lutz.work', 'r2.dev'];
-export const isR2Url = (src) => typeof src === 'string' && R2_HOSTS.some(h => src.includes(h));
+export const R2_PUBLIC_HOST = 'assets.lutz.work';
+export const isR2Url = (src) => typeof src === 'string' && src.includes(R2_PUBLIC_HOST);
 
 export const SHAPE_PRESETS = [
   { label: "Rectangle", w: 208, h: 128 },
