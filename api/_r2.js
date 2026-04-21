@@ -14,11 +14,16 @@ export const r2 = new S3Client({
 
 export const BUCKET = process.env.R2_BUCKET_NAME;
 
+// Every key we write is timestamp-prefixed and never overwritten, so responses
+// can be cached indefinitely. `immutable` lets browsers skip revalidation.
+export const CACHE_CONTROL = 'public, max-age=31536000, immutable';
+
 export async function getPresignedUploadUrl(key, contentType) {
   const command = new PutObjectCommand({
     Bucket: BUCKET,
     Key: key,
     ContentType: contentType,
+    CacheControl: CACHE_CONTROL,
   });
   return getSignedUrl(r2, command, { expiresIn: 300 }); // expires in 5 minutes
 }

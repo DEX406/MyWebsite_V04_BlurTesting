@@ -1,7 +1,7 @@
 import sharp from 'sharp';
 import { GetObjectCommand, PutObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
 import { verifyAuth } from './_auth.js';
-import { r2, BUCKET, R2_PUBLIC_URL } from './_r2.js';
+import { r2, BUCKET, R2_PUBLIC_URL, CACHE_CONTROL } from './_r2.js';
 
 // Formats that should be converted to WebP lossless
 const CONVERT_EXTS = new Set(['png', 'jpg', 'jpeg', 'bmp', 'avif', 'tiff', 'tif']);
@@ -41,6 +41,7 @@ export default async function handler(req, res) {
       Key: webpKey,
       Body: webpBuffer,
       ContentType: 'image/webp',
+      CacheControl: CACHE_CONTROL,
     }));
 
     // Delete original to save storage (only if key changed)

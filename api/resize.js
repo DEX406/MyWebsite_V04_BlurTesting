@@ -1,7 +1,7 @@
 import sharp from 'sharp';
 import { GetObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3';
 import { verifyAuth } from './_auth.js';
-import { r2, BUCKET, R2_PUBLIC_URL } from './_r2.js';
+import { r2, BUCKET, R2_PUBLIC_URL, CACHE_CONTROL } from './_r2.js';
 
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -72,6 +72,7 @@ export default async function handler(req, res) {
       Key: outKey,
       Body: buffer,
       ContentType: contentType,
+      CacheControl: CACHE_CONTROL,
     }));
 
     return res.status(200).json({ url: `${R2_PUBLIC_URL}/${outKey}` });

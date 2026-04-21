@@ -82,7 +82,10 @@ export async function restoreFromZip(zipFile, restoreImageKeyFn, onProgress) {
       const { uploadUrl } = await restoreImageKeyFn(key, contentType);
       const uploadRes = await fetch(uploadUrl, {
         method: 'PUT',
-        headers: { 'Content-Type': contentType },
+        headers: {
+          'Content-Type': contentType,
+          'Cache-Control': 'public, max-age=31536000, immutable',
+        },
         body: blob,
       });
       if (!uploadRes.ok) throw new Error(`Upload returned ${uploadRes.status}`);

@@ -141,10 +141,15 @@ export async function uploadImage(file) {
 
   const { uploadUrl, publicUrl, key } = await res.json();
 
-  // Step 2: upload the file directly to R2 (bypasses Vercel size limits)
+  // Step 2: upload the file directly to R2 (bypasses Vercel size limits).
+  // Cache-Control must mirror the value signed into the presigned URL on the
+  // server, or R2 rejects the PUT with SignatureDoesNotMatch.
   const upload = await fetch(uploadUrl, {
     method: 'PUT',
-    headers: { 'Content-Type': file.type },
+    headers: {
+      'Content-Type': file.type,
+      'Cache-Control': 'public, max-age=31536000, immutable',
+    },
     body: file,
   });
 
@@ -185,7 +190,10 @@ export async function uploadVideo(blob, filename) {
 
   const upload = await fetch(uploadUrl, {
     method: 'PUT',
-    headers: { 'Content-Type': 'video/webm' },
+    headers: {
+      'Content-Type': 'video/webm',
+      'Cache-Control': 'public, max-age=31536000, immutable',
+    },
     body: blob,
   });
 
