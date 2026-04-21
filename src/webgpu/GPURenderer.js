@@ -9,7 +9,7 @@ import { TextureCache } from './TextureCache.js';
 import { TextRenderer } from './TextRenderer.js';
 import { PillRenderer } from './PillRenderer.js';
 import { hexToRgb, isGifSrc, isItemVisibleAtTime } from '../utils.js';
-import { GLASS_DOWNSAMPLE, DEG_TO_RAD } from '../constants.js';
+import { GLASS_DOWNSAMPLE, DEG_TO_RAD, isR2Url } from '../constants.js';
 
 function hexToRgba(hex, alpha = 1) {
   return [...hexToRgb(hex), alpha];
@@ -1314,7 +1314,7 @@ export class GPURenderer {
 
   _imgSrcType(src) {
     if (!src) return null;
-    if (src.startsWith('http') && !src.includes('r2.dev')) return 'link';
+    if (src.startsWith('http') && !isR2Url(src)) return 'link';
     return 'stored';
   }
 

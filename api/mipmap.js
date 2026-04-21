@@ -81,6 +81,13 @@ export default async function handler(req, res) {
     const buffer = Buffer.from(await obj.Body.transformToByteArray());
     const meta = await sharp(buffer).metadata();
 
+    // Animated sources (e.g. animated WebP) would be flattened to frame 0 by
+    // sharp's default resize. Skip mipmap generation so the animated master is
+    // used at all zoom levels.
+    if ((meta.pages || 1) > 1) {
+      return res.status(200).json({ src, srcQ50: null, srcQ25: null, srcQ12: null, srcQ6: null });
+    }
+
     // Generate missing variants
     for (const v of toGenerate) {
       const targetWidth = Math.max(1, Math.round(meta.width * v.scale));

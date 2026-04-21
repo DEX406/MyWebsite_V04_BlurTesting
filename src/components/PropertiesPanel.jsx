@@ -1,9 +1,10 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { FONT, FONTS } from '../constants.js';
+import { FONT, FONTS, isR2Url } from '../constants.js';
 import { itemShadowEnabled } from '../utils.js';
 import { uploadImage, serverResize, downloadImageViaProxy } from '../api.js';
 import { ChevronUpIcon, ChevronDownIcon } from '../icons.jsx';
 import { togBtn, panelSurface, tbBtn, Z, CHECKER_BG } from '../styles.js';
+import { ResizePresetSelect, presetToScale } from './ResizePresetSelect.jsx';
 
 /* ─────────────────────────────────────────────
    Design tokens (derived from global style)
@@ -458,7 +459,7 @@ export function PropertiesPanel({ isAdmin, selectedIds, items, openColorPicker, 
             <Section title="Export">
           {type === "image" && (
             <div style={{ display: "flex", gap: GAP }}>
-              {!isMulti && sel.src.startsWith("http") && !sel.src.includes("r2.dev") ? (
+              {!isMulti && sel.src.startsWith("http") && !isR2Url(sel.src) ? (
                 <Toggle label="Store in R2" active onClick={async () => {
                   setUploadStatus("Storing...");
                   try {
@@ -469,24 +470,22 @@ export function PropertiesPanel({ isAdmin, selectedIds, items, openColorPicker, 
                   setTimeout(() => setUploadStatus(""), 3000);
                 }} flex />
               ) : (
-                <>
-                  <select
-                    value=""
-                    onChange={async (e) => {
-                      if (!e.target.value) return;
-                      const scale = parseInt(e.target.value) / 100;
-                      const r2Images = selectedItems.filter(i => i.type === "image" && !(i.src.startsWith("http") && !i.src.includes("r2.dev")));
-                      if (r2Images.length > 0) await resizeImage(r2Images, scale);
-                      e.target.value = "";
-                    }}
-                    style={{ ...inp, appearance: "auto", cursor: "pointer", flex: 1, width: "auto" }}
-                  >
-                    <option value="" style={{ background: "#1F1E1D" }}>Resize...</option>
-                    <option value="75" style={{ background: "#1F1E1D" }}>75%</option>
-                    <option value="50" style={{ background: "#1F1E1D" }}>50%</option>
-                    <option value="25" style={{ background: "#1F1E1D" }}>25%</option>
-                  </select>
-                </>
+                <ResizePresetSelect
+                  value=""
+                  sourceLongEdge={Math.max(sel.naturalWidth || sel.w || 0, sel.naturalHeight || sel.h || 0)}
+                  onChange={async (val) => {
+                    const r2Images = selectedItems.filter(i => i.type === "image" && !(i.src.startsWith("http") && !isR2Url(i.src)));
+                    if (!r2Images.length) return;
+                    // Resolve scale per-item so pixel presets respect each image's own long edge.
+                    for (const item of r2Images) {
+                      const longEdge = Math.max(item.naturalWidth || item.w || 0, item.naturalHeight || item.h || 0);
+                      const scale = presetToScale(val, longEdge);
+                      if (scale === null || scale >= 1) continue;
+                      await resizeImage([item], scale);
+                    }
+                  }}
+                  style={{ flex: 1, width: "auto" }}
+                />
               )}
             </div>
           )}
@@ -518,7 +517,7 @@ export function PropertiesPanel({ isAdmin, selectedIds, items, openColorPicker, 
                 try {
                   const src = item.src;
                   let blob;
-                  if (src.includes('r2.dev')) {
+                  if (isR2Url(src)) {
                     const key = src.replace(/^https?:\/\/[^/]+\//, '');
                     blob = await downloadImageViaProxy(key);
                   } else {

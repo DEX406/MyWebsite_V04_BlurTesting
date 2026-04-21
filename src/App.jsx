@@ -4,6 +4,8 @@ import { ZoomInIcon, ZoomOutIcon, GridIcon, HomeIcon, FloppyIcon, UndoIcon, Redo
 import { FONT, FONTS, DEFAULT_BG_GRID } from './constants.js';
 import { loadConfiguredFonts } from './fontLibrary.js';
 import { uid, snap, isTyping, pasteItems, migrateItems, applyDragDelta, isGifSrc, isItemFlashEnabled, nextFlashTransitionMs, readLocal, writeLocal, maxZ, minZ } from './utils.js';
+import { presetToScale } from './components/ResizePresetSelect.jsx';
+import { decodeGifFrames, fitOntoCanvas, encodeAnimatedWebp } from './animatedWebp.js';
 import { createBackupZip, restoreFromZip } from './backupRestore.js';
 import { tbBtn, tbSurface, tbSep, togBtn, infoText, panelSurface, UI_BG, UI_BORDER, Z } from './styles.js';
 import { CanvasItem } from './components/CanvasItem.jsx';
@@ -526,22 +528,24 @@ export default function App() {
 
   // ── Image upload (all conversion handled server-side) ──
 
-  const fitTo512 = (natW, natH) => {
-    const MAX = 512;
-    if (natW <= MAX && natH <= MAX) return { w: natW, h: natH };
-    const scale = Math.min(MAX / natW, MAX / natH);
-    return { w: Math.round(natW * scale), h: Math.round(natH * scale) };
+  // Default canvas footprint for newly-placed media: natural/4 snapped to 16px.
+  // This replaces the old "fit to 512px max" behaviour — the master still goes
+  // to R2 at full (or user-chosen) resolution, we just display smaller. Users
+  // who want the master itself smaller pick a preset in the upload dropdown.
+  const fitForDisplay = (natW, natH) => {
+    const w = snap(Math.max(1, Math.round(natW / 4)), true);
+    const h = snap(Math.max(1, Math.round(natH / 4)), true);
+    return { w, h };
   };
 
-  // Load image dimensions and add to canvas, fitting to 512px max
+  // Load image dimensions and add to canvas at 1/4 natural size, 16-px snapped.
   const addImageToCanvas = (url, opts = {}) => {
     const { id: existingId, onError } = opts;
     const id = existingId || uid();
     return new Promise((resolve, reject) => {
       const img = new Image();
       img.onload = () => {
-        const fit = fitTo512(img.width, img.height);
-        const w = snap(fit.w, true), h = snap(fit.h, true);
+        const { w, h } = fitForDisplay(img.naturalWidth, img.naturalHeight);
         const c = viewCenter();
         if (existingId) {
           setItemsAndSave(p => p.map(i => i.id === id ? { ...i, w, h, naturalWidth: img.naturalWidth, naturalHeight: img.naturalHeight, x: snap(c.x - w / 2, true), y: snap(c.y - h / 2, true) } : i));
@@ -564,9 +568,63 @@ export default function App() {
     addImageToCanvas(url, { id, ...opts });
   };
 
+  // Client-side preprocessing: apply upload-preset resize to a still image and
+  // re-encode as WebP lossless. Returns a new File ready for upload, or null
+  // if no preprocessing is needed (caller should upload the original).
+  const preprocessStillForUpload = async (file, preset) => {
+    if (!preset || preset === 'orig') return null;
+    const bmp = await createImageBitmap(file);
+    const longEdge = Math.max(bmp.width, bmp.height);
+    const scale = presetToScale(preset, longEdge);
+    if (scale === null || scale >= 1) { bmp.close?.(); return null; }
+    const targetW = Math.max(1, Math.round(bmp.width * scale));
+    const targetH = Math.max(1, Math.round(bmp.height * scale));
+    const canvas = document.createElement('canvas');
+    canvas.width = targetW;
+    canvas.height = targetH;
+    const ctx = canvas.getContext('2d');
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(bmp, 0, 0, targetW, targetH);
+    bmp.close?.();
+    const blob = await new Promise((resolve, reject) =>
+      canvas.toBlob((b) => b ? resolve(b) : reject(new Error('toBlob failed')), 'image/webp', 1));
+    const filename = (file.name || 'image').replace(/\.[^.]+$/, '') + '.webp';
+    return new File([blob], filename, { type: 'image/webp' });
+  };
+
+  // Client-side preprocessing for GIF uploads: decode frames via ImageDecoder,
+  // optionally apply upload-preset resize, encode as animated WebP lossless.
+  // Any failure here (unsupported decoder, malformed GIF, encode OOM) returns
+  // null so the caller can fall back to uploading the original GIF.
+  const preprocessGifForUpload = async (file, preset) => {
+    try {
+      const decoded = await decodeGifFrames(file);
+      if (!decoded) return null;
+      let canvasW = decoded.width, canvasH = decoded.height;
+      const scale = presetToScale(preset, Math.max(canvasW, canvasH));
+      if (scale !== null && scale > 0 && scale < 1) {
+        canvasW = Math.max(1, Math.round(canvasW * scale));
+        canvasH = Math.max(1, Math.round(canvasH * scale));
+      }
+      const frames = decoded.frames.map((f) => ({
+        canvas: (f.canvas.width === canvasW && f.canvas.height === canvasH)
+          ? f.canvas
+          : fitOntoCanvas(f.canvas, f.canvas.width, f.canvas.height, canvasW, canvasH),
+        durationMs: f.durationMs,
+      }));
+      const blob = await encodeAnimatedWebp(frames, { lossless: true, loopCount: 0 });
+      const filename = (file.name || 'animation').replace(/\.[^.]+$/, '') + '.webp';
+      return new File([blob], filename, { type: 'image/webp' });
+    } catch (err) {
+      console.warn('GIF→animated WebP conversion failed, falling back to GIF:', err);
+      return null;
+    }
+  };
+
   const handleFilesRef = useRef(null);
 
-  const handleFiles = async (files) => {
+  const handleFiles = async (files, uploadPreset = 'orig') => {
     files = Array.from(files);
     if (!files.length) return;
     const total = files.length;
@@ -587,8 +645,7 @@ export default function App() {
             setUploadStatus(`Uploading video${total > 1 ? ` (${done + 1}/${total})` : ''}...`);
             const webmFilename = file.name.replace(/\.[^.]+$/, '.webm');
             const { url } = await uploadVideo(blob, webmFilename);
-            const fit = fitTo512(width, height);
-            const w = snap(fit.w, true), h = snap(fit.h, true);
+            const { w, h } = fitForDisplay(width, height);
             const c = viewCenter();
             setItemsAndSave(p => [...p, {
               id: uid(), type: "video", src: url,
@@ -598,8 +655,20 @@ export default function App() {
             }]);
           } else {
             const isGif = file.type === "image/gif";
-            const { url } = await uploadImage(file);
+            let toUpload = file;
+            let uploadedAsAnimatedWebp = false;
             if (isGif) {
+              setUploadStatus(`Converting GIF${total > 1 ? ` (${done + 1}/${total})` : ''}...`);
+              const converted = await preprocessGifForUpload(file, uploadPreset);
+              if (converted) { toUpload = converted; uploadedAsAnimatedWebp = true; }
+              // If converted is null, browser can't decode — fall back to GIF.
+            } else {
+              const resized = await preprocessStillForUpload(file, uploadPreset);
+              if (resized) toUpload = resized;
+            }
+            const { url } = await uploadImage(toUpload);
+            if (isGif && !uploadedAsAnimatedWebp) {
+              // Fallback: couldn't convert client-side, uploaded as GIF.
               addGifToCanvas(url);
             } else {
               await addImageToCanvas(url);
@@ -621,7 +690,27 @@ export default function App() {
 
   handleFilesRef.current = handleFiles;
 
-  const handleFileUpload = (e) => { handleFiles(e.target.files); e.target.value = ""; };
+  const handleFileUpload = (filesOrEvent, uploadPreset) => {
+    // Toolbar calls with (FileList, preset); drop/paste callers pass a FileList.
+    const files = filesOrEvent?.target ? filesOrEvent.target.files : filesOrEvent;
+    handleFiles(files, uploadPreset);
+  };
+
+  // Animated maker hand-off: takes an encoded animated WebP Blob, uploads it to
+  // R2, and places it on the canvas at 1/4 natural size like any other image.
+  const handleAnimatedEncoded = async (blob) => {
+    setUploadStatus('Uploading animation...');
+    try {
+      const file = new File([blob], `animated-${Date.now()}.webp`, { type: 'image/webp' });
+      const { url } = await uploadImage(file);
+      await addImageToCanvas(url);
+      setUploadStatus('');
+    } catch (err) {
+      console.error('Animated upload failed:', err);
+      setUploadStatus(err.message || 'Upload failed');
+      setTimeout(() => setUploadStatus(''), 4000);
+    }
+  };
 
   // Clipboard paste (Ctrl-V) — images from system clipboard take priority, then board clipboard
   const clipboardRef = useRef(clipboard);
@@ -951,6 +1040,8 @@ export default function App() {
         isAdmin={isAdmin}
         onAddText={addText} onAddLink={addLink} onAddShape={addShape} onAddConnector={addConnector}
         onFileUpload={handleFileUpload} onAddImageUrl={handleAddImageUrl}
+        onAnimatedEncoded={handleAnimatedEncoded}
+        setUploadStatus={setUploadStatus}
         onExportBoard={handleFullBackup} onImportBoard={importBoard} onCleanup={handleCleanup}
         onLock={() => { logout(); setIsAdmin(false); setSelectedIds([]); setEditingTextId(null); }}
         onShowLogin={() => setShowLogin(true)}

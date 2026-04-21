@@ -1,7 +1,7 @@
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 
-export const R2_PUBLIC_URL = (process.env.R2_PUBLIC_URL || 'https://pub-354e0f6627594f598c56d9570efa8a3b.r2.dev').replace(/\/+$/, '');
+export const R2_PUBLIC_URL = (process.env.R2_PUBLIC_URL || 'https://assets.lutz.work').replace(/\/+$/, '');
 
 export const r2 = new S3Client({
   region: 'auto',

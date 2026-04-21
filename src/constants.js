@@ -27,6 +27,9 @@ export const TEXT_DEFAULT_SIZE = 24; // default fontSize (px)
 
 export const FONTS = CUSTOM_FONTS;
 
+export const R2_PUBLIC_HOST = 'assets.lutz.work';
+export const isR2Url = (src) => typeof src === 'string' && src.includes(R2_PUBLIC_HOST);
+
 export const SHAPE_PRESETS = [
   { label: "Rectangle", w: 208, h: 128 },
   { label: "Square", w: 160, h: 160 },

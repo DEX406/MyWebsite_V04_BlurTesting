@@ -1,11 +1,14 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { FONT, SHAPE_PRESETS, GRID_SPACINGS } from '../constants.js';
+import { FONT, SHAPE_PRESETS, GRID_SPACINGS, isR2Url } from '../constants.js';
 import { tbBtn, tbSurface, togBtn, dropdownSurface, Z } from '../styles.js';
 import {
   PlusIcon, LockIcon, TrashIcon, SunIcon, PaletteIcon,
   SaveIcon, LoadIcon, TextIcon, GlobeIcon, ShapeIcon,
-  ConnectorIcon, LinkIcon, TileIcon, SetHomeIcon, CleanupIcon
+  ConnectorIcon, LinkIcon, TileIcon, SetHomeIcon, CleanupIcon,
+  FilmStripIcon,
 } from '../icons.jsx';
+import { ResizePresetSelect } from './ResizePresetSelect.jsx';
+import { AnimatedMakerPanel } from './AnimatedMakerPanel.jsx';
 
 const labelStyle = { color: "rgba(194,192,182,0.45)", fontSize: 11 };
 const sectionLabel = { color: "rgba(194,192,182,0.3)", fontSize: 9, textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 6, marginTop: 10 };
@@ -51,6 +54,7 @@ export function Toolbar({
   isAdmin,
   onAddText, onAddLink, onAddShape, onAddConnector,
   onFileUpload, onAddImageUrl,
+  onAnimatedEncoded, setUploadStatus,
   onExportBoard, onImportBoard, onCleanup,
   onLock, onShowLogin,
   snapOn, setSnapOn,
@@ -64,6 +68,9 @@ export function Toolbar({
   const [showPaletteEditor, setShowPaletteEditor] = useState(false);
   const [showGridSettings, setShowGridSettings] = useState(false);
   const [addType, setAddType] = useState(null);
+  const [showUploadMenu, setShowUploadMenu] = useState(false);
+  const [showAnimatedMaker, setShowAnimatedMaker] = useState(false);
+  const [uploadPreset, setUploadPreset] = useState('orig');
   const [cleaning, setCleaning] = useState(false);
   const [flashOn, setFlashOn] = useState(false);
   const [r2Flash, setR2Flash] = useState(false);
@@ -93,7 +100,7 @@ export function Toolbar({
     const observer = new PerformanceObserver((list) => {
       let count = 0;
       for (const entry of list.getEntries()) {
-        if (entry.name.includes('r2.dev') && entry.duration >= 25) count++;
+        if (isR2Url(entry.name) && entry.duration >= 25) count++;
       }
       if (count > 0) {
         const wasIdle = ref.queue === 0;
@@ -115,7 +122,7 @@ export function Toolbar({
   }, [onCleanup]);
 
   // Close dropdowns on outside click
-  const anyOpen = showShadowSettings || showPaletteEditor || showGridSettings || addType === "shape";
+  const anyOpen = showShadowSettings || showPaletteEditor || showGridSettings || addType === "shape" || showUploadMenu || showAnimatedMaker;
   useEffect(() => {
     if (!anyOpen) return;
     const close = (ev) => {
@@ -124,6 +131,8 @@ export function Toolbar({
       setShowPaletteEditor(false);
       setShowGridSettings(false);
       setAddType(null);
+      setShowUploadMenu(false);
+      setShowAnimatedMaker(false);
     };
     const t = setTimeout(() => window.addEventListener("pointerdown", close), 0);
     return () => { clearTimeout(t); window.removeEventListener("pointerdown", close); };
@@ -231,12 +240,52 @@ export function Toolbar({
       {/* Row 2: creation tools */}
       {isAdmin && (
         <div style={tbSurface}>
-          <button
-            onClick={() => fileInputRef.current?.click()}
-            title="Upload image or video"
-            style={{ ...tbBtn, color: "#2C84DB" }}
-          ><PlusIcon /></button>
-          <input ref={fileInputRef} type="file" accept="image/*,video/*" multiple onChange={onFileUpload} style={{ display: "none" }} />
+          {/* Upload image/video — dropdown with resize preset, then opens picker */}
+          <div style={{ position: "relative" }}>
+            <button
+              onClick={() => setShowUploadMenu((v) => !v)}
+              title="Upload image or video"
+              style={showUploadMenu ? { ...tbBtn, background: "rgba(44,132,219,0.12)", color: "#2C84DB" } : { ...tbBtn, color: "#2C84DB" }}
+            ><PlusIcon /></button>
+            <input
+              ref={fileInputRef} type="file" accept="image/*,video/*" multiple
+              onChange={(e) => {
+                const files = e.target.files;
+                onFileUpload(files, uploadPreset);
+                e.target.value = "";
+                setShowUploadMenu(false);
+              }}
+              style={{ display: "none" }}
+            />
+            {showUploadMenu && (
+              <div data-ui style={{ position: "absolute", top: "calc(100% + 6px)", right: -3, ...dropdownSurface, padding: 12, width: 220 }}>
+                <div style={{ ...sectionLabel, marginTop: 0 }}>Master size on upload</div>
+                <ResizePresetSelect
+                  value={uploadPreset === 'orig' ? 'orig' : uploadPreset}
+                  onChange={(v) => setUploadPreset(v || 'orig')}
+                  placeholder="Original"
+                />
+                <button
+                  onClick={() => fileInputRef.current?.click()}
+                  style={{ ...togBtn, width: "100%", height: 32, marginTop: 10, background: "rgba(44,132,219,0.22)", color: "rgba(194,192,182,0.85)", fontWeight: 600 }}
+                >Select files</button>
+              </div>
+            )}
+          </div>
+          {/* Animated WebP maker */}
+          <div style={{ position: "relative" }}>
+            <button
+              onClick={() => setShowAnimatedMaker((v) => !v)}
+              title="Make animated WebP from images"
+              style={showAnimatedMaker ? { ...tbBtn, background: "rgba(44,132,219,0.12)", color: "#2C84DB" } : tbBtn}
+            ><FilmStripIcon /></button>
+            <AnimatedMakerPanel
+              open={showAnimatedMaker}
+              onClose={() => setShowAnimatedMaker(false)}
+              onEncoded={onAnimatedEncoded}
+              setUploadStatus={setUploadStatus}
+            />
+          </div>
           <button onClick={onAddImageUrl} title="Add image from URL" style={tbBtn}><LinkIcon /></button>
           <button onClick={onAddText} title="Add Text" style={tbBtn}><TextIcon /></button>
           <button onClick={onAddLink} title="Add Link element" style={tbBtn}><GlobeIcon /></button>
