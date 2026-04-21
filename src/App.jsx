@@ -950,7 +950,7 @@ export default function App() {
 
         {items.length === 0 && (
           <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column", gap: 12, color: "rgba(194,192,182,0.15)", pointerEvents: "none" }}>
-            <div style={{ fontSize: 48, fontWeight: 700, letterSpacing: "-0.02em" }}>infgrid.com</div>
+            <div style={{ fontSize: 48, fontWeight: 700, letterSpacing: "-0.02em" }}>lutz.work</div>
             <div style={{ fontSize: 14 }}>{isAdmin ? "Upload images or add items" : "Nothing here yet"}</div>
           </div>
         )}
