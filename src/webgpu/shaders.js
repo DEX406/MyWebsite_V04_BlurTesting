@@ -31,7 +31,36 @@ return min(max(q.x, q.y), 0.0) + length(max(q, vec2<f32>(0.0))) - r;
 
 // Quad/matte share the same uniform struct and vertex stage. Defined once
 // and spliced into both shader modules to avoid layout drift.
-const QUAD_UNIFORMS_WGSL = /* wgsl */ `struct QuadUniforms { resolution:     vec2<f32>,  // offset   0 pan:            vec2<f32>,  // offset   8 zoom:           f32,        // offset  16 rotation:       f32,        // offset  20 radius:         f32,        // offset  24 opacity:        f32,        // offset  28 item_pos:       vec2<f32>,  // offset  32 item_size:      vec2<f32>,  // offset  40 pad_size:       vec2<f32>,  // offset  48 pad_offset:     vec2<f32>,  // offset  56 color:          vec4<f32>,  // offset  64 tex_crop:       vec4<f32>,  // offset  80 border_color:   vec4<f32>,  // offset  96 text_color:     vec4<f32>,  // offset 112 border_width:   f32,        // offset 128 textured:       f32,        // offset 132 has_shadow:     f32,        // offset 136 shadow_size:    f32,        // offset 140 shadow_opacity: f32,        // offset 144 is_selection:   f32,        // offset 148 text_alpha:     f32,        // offset 152 noise_opacity:  f32,        // offset 156 noise_enabled:  f32,        // offset 160 _p0:            f32,        // offset 164 _p1:            f32,        // offset 168 _p2:            f32,        // offset 172 };`;
+const QUAD_UNIFORMS_WGSL = /* wgsl */ `
+struct QuadUniforms {
+resolution:     vec2<f32>,  // offset   0
+pan:            vec2<f32>,  // offset   8
+zoom:           f32,        // offset  16
+rotation:       f32,        // offset  20
+radius:         f32,        // offset  24
+opacity:        f32,        // offset  28
+item_pos:       vec2<f32>,  // offset  32
+item_size:      vec2<f32>,  // offset  40
+pad_size:       vec2<f32>,  // offset  48
+pad_offset:     vec2<f32>,  // offset  56
+color:          vec4<f32>,  // offset  64
+tex_crop:       vec4<f32>,  // offset  80
+border_color:   vec4<f32>,  // offset  96
+text_color:     vec4<f32>,  // offset 112
+border_width:   f32,        // offset 128
+textured:       f32,        // offset 132
+has_shadow:     f32,        // offset 136
+shadow_size:    f32,        // offset 140
+shadow_opacity: f32,        // offset 144
+is_selection:   f32,        // offset 148
+text_alpha:     f32,        // offset 152
+noise_opacity:  f32,        // offset 156
+noise_enabled:  f32,        // offset 160
+_p0:            f32,        // offset 164
+_p1:            f32,        // offset 168
+_p2:            f32,        // offset 172
+};
+`;
 
 // Shared vertex stage for quad + matte. Applies local rotation around the item
 // center, then world→screen→NDC.
