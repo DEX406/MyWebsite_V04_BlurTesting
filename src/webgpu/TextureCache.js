@@ -85,7 +85,7 @@ export class TextureCache {
     }
   }
 
-  get(url, pixelated = false, isPlaceholder = false) {
+  get(url, isPlaceholder = false) {
     if (!url) return this.transparent;
     const cached = this.cache.get(url);
     if (cached) {
@@ -123,7 +123,7 @@ export class TextureCache {
     return this.fallback;
   }
 
-  getBestReady(candidates, placeholderUrl, pixelated = false) {
+  getBestReady(candidates, placeholderUrl) {
     let bestEntry = null;
     let bestUrl = null;
     for (let i = 0; i < candidates.length; i++) {
@@ -132,7 +132,7 @@ export class TextureCache {
       const isFirst = i === 0;
       const isPlaceholder = url === placeholderUrl;
       if (isFirst || isPlaceholder) {
-        const entry = this.get(url, pixelated, isPlaceholder);
+        const entry = this.get(url, isPlaceholder);
         if (!bestEntry && entry.ready && entry !== this.fallback && entry !== this.transparent) {
           bestEntry = entry;
           bestUrl = url;
