@@ -37,8 +37,8 @@ export function useMipmap(items, updateItem, vp) {
       !pendingGenerations.has(i.src)
     );
 
-    // Skip GIFs (animated, rendered via DOM overlay) and SVGs (vector, no raster mipmaps)
-    const eligible = images.filter(i => !isGifSrc(i.src) && !isSvgSrc(i.src));
+    // Skip animated items (GIF flag, GIF src, or SVG) — no raster mipmaps needed
+    const eligible = images.filter(i => !i.isGif && !isGifSrc(i.src) && !isSvgSrc(i.src));
 
     // Only process R2-hosted images
     const r2Images = eligible.filter(i => isR2Url(i.src));
