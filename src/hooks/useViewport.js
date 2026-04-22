@@ -109,16 +109,20 @@ export function useViewport() {
     const startZoom = zoomRef.current;
     const startTime = performance.now();
     const ease = t => t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t;
-    const frame = (now) => {
+    // Time-based easing — the progress is a function of wall clock, not
+    // frame count, so the animation still completes in `duration` ms even
+    // when frameSync skips rAFs to honour MAX_FRAME_RATE.
+    const step = () => {
+      const now = performance.now();
       const t = Math.min((now - startTime) / duration, 1);
       const e = ease(t);
       panRef.current = { x: startPan.x + (targetPan.x - startPan.x) * e, y: startPan.y + (targetPan.y - startPan.y) * e };
       zoomRef.current = startZoom + (targetZoom - startZoom) * e;
       applyTransformSync();
       updateDisplaysNow();
-      if (t < 1) requestAnimationFrame(frame);
+      if (t < 1) frameSync.scheduleDraw(FRAME_CHANNELS.VIEWPORT_ANIM, step);
     };
-    requestAnimationFrame(frame);
+    frameSync.scheduleDraw(FRAME_CHANNELS.VIEWPORT_ANIM, step);
   }, [applyTransformSync, updateDisplaysNow]);
 
   const goHome = useCallback(() => {

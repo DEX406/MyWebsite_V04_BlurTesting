@@ -16,6 +16,7 @@ import { LoginModal } from './components/LoginModal.jsx';
 import { loadBoard, saveBoard, cleanupFiles, uploadImage, uploadVideo, login, logout, hasToken, getBackupManifest, restoreImageKey, downloadImageViaProxy, serverResize } from './api.js';
 import { convertVideoToWebm, isVideoFile } from './videoUtils.js';
 import { BlurFrameSync } from './blurFrameSync.js';
+import { frameSync, FRAME_CHANNELS } from './frameSync.js';
 import { useViewport } from './hooks/useViewport.js';
 import { useKeyboard } from './hooks/useKeyboard.js';
 import { usePointerInput } from './hooks/usePointerInput.js';
@@ -331,9 +332,13 @@ export default function App() {
     drawBgRef.current();
   }, []);
 
-  // Re-render when state changes that affect WebGL output
+  // Re-render when state changes that affect WebGL output. Routed through
+  // frameSync so these paints land on a vsync boundary and honour
+  // MAX_FRAME_RATE instead of firing as soon as React commits.
   useEffect(() => {
-    if (drawBgRef.current) drawBgRef.current();
+    frameSync.scheduleDraw(FRAME_CHANNELS.APP_STATE, () => {
+      if (drawBgRef.current) drawBgRef.current();
+    });
   }, [bgGrid, items, selectedIds, globalShadow, editingTextId]);
 
   // Re-render only at each flash visibility transition. A fixed 30fps polling
@@ -346,7 +351,9 @@ export default function App() {
       const delay = nextFlashTransitionMs(itemsRef.current);
       if (!Number.isFinite(delay)) return;
       timeoutId = setTimeout(() => {
-        if (drawBgRef.current) drawBgRef.current();
+        frameSync.scheduleDraw(FRAME_CHANNELS.APP_FLASH, () => {
+          if (drawBgRef.current) drawBgRef.current();
+        });
         schedule();
       }, Math.max(1, delay));
     };
@@ -358,7 +365,11 @@ export default function App() {
   useEffect(() => {
     const el = canvasRef.current;
     if (!el) return;
-    const ro = new ResizeObserver(() => { if (drawBgRef.current) drawBgRef.current(); });
+    const ro = new ResizeObserver(() => {
+      frameSync.scheduleDraw(FRAME_CHANNELS.APP_RESIZE, () => {
+        if (drawBgRef.current) drawBgRef.current();
+      });
+    });
     ro.observe(el);
     return () => ro.disconnect();
   }, []);

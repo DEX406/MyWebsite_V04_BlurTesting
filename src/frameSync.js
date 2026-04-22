@@ -11,9 +11,11 @@
 // Two extra knobs on top of the coalescing:
 //
 //   1. MAX_FRAME_RATE (constants.js) puts a hard ceiling on the cadence.
-//      A frame is never fired sooner than 1000 / MAX_FRAME_RATE ms after
-//      the previous one finished. Setting this lower throttles the whole
-//      site, which is useful on battery / low-end devices.
+//      The throttle is rAF-skip based: on a display faster than MAX, we let
+//      rAFs pass through until enough wall time has elapsed. Using rAF (not
+//      setTimeout) keeps every paint aligned to a vsync boundary, which
+//      matters because setTimeout-scheduled paints that land between vsyncs
+//      get flagged as dropped frames by Chrome's rendering stats overlay.
 //
 //   2. acquire(token) / release(token) lets any subsystem block the next
 //      frame until it is ready (texture upload pending, async asset still
@@ -25,14 +27,16 @@ import { MAX_FRAME_RATE } from './constants.js';
 
 class FrameSync {
   constructor() {
-    this.minFrameMs = 1000 / Math.max(1, MAX_FRAME_RATE);
+    // A half-frame slop accounts for jitter in rAF timestamps — without it a
+    // 60 Hz target on a 60 Hz display would drop every other frame because
+    // the "now - last" measurement is occasionally 16.1 ms instead of 16.7.
+    this.minFrameMs = (1000 / Math.max(1, MAX_FRAME_RATE)) - (1000 / 120);
     this.lastFrameTime = 0;
     // channel key -> callback. Each channel fires at most once per frame.
     // Re-scheduling the same channel before the frame fires replaces the
     // callback (latest data wins).
     this.queued = new Map();
     this.rafId = 0;
-    this.timerId = 0;
     this.blockers = new Set();
     this.lastDrawDuration = 0;
   }
@@ -72,39 +76,38 @@ class FrameSync {
     return this.blockers.size === 0;
   }
 
-  // Bypass the queue and run a single draw right now. Used by code paths
+  // Run a single draw immediately, outside the queue. Used by code paths
   // that need a synchronous return value (WebGPU renderSync returns its
-  // overlay list to the caller). The frame timestamp still advances so
-  // the throttle stays accurate.
+  // overlay list to the caller in the same tick). Does NOT update the
+  // throttle timestamp — otherwise every synchronous draw would delay the
+  // next queued frame and the cap would degrade far below MAX_FRAME_RATE.
   flushSync(callback) {
-    const t0 = performance.now();
     try { callback(); }
     catch (e) { console.error('[frameSync] sync draw failed:', e); }
-    const t1 = performance.now();
-    this.lastDrawDuration = t1 - t0;
-    this.lastFrameTime = t1;
   }
 
   _arm() {
-    if (this.rafId || this.timerId) return;
+    if (this.rafId) return;
     if (this.queued.size === 0) return;
-    const wait = this.minFrameMs - (performance.now() - this.lastFrameTime);
-    if (wait > 1) {
-      this.timerId = setTimeout(() => {
-        this.timerId = 0;
-        this._arm();
-      }, wait);
-      return;
-    }
-    this.rafId = requestAnimationFrame(() => this._fire());
+    this.rafId = requestAnimationFrame((now) => this._tick(now));
   }
 
-  _fire() {
+  _tick(now) {
     this.rafId = 0;
 
-    // If a subsystem is still busy, hold the frame. _arm() will be called
-    // again from release().
+    // If a subsystem is still busy, hold the frame. release() will re-arm.
     if (this.blockers.size > 0) return;
+
+    // rAF-skip throttle: if MAX_FRAME_RATE hasn't elapsed since the last
+    // paint we fired, wait for the NEXT rAF instead of firing now. No
+    // setTimeout — that goes off-vsync and Chromium marks the resulting
+    // paint as janky.
+    if (this.lastFrameTime > 0 && (now - this.lastFrameTime) < this.minFrameMs) {
+      if (this.queued.size > 0) {
+        this.rafId = requestAnimationFrame((t) => this._tick(t));
+      }
+      return;
+    }
 
     // Snapshot and clear before running so callbacks that reschedule
     // themselves (e.g. animation loops) queue cleanly for the next frame.
@@ -119,12 +122,14 @@ class FrameSync {
     const t1 = performance.now();
 
     // Anchor the throttle on draw END, not start. A 50 ms draw on a 60 fps
-    // budget therefore pushes the next frame 16 ms past its end — the rate
-    // automatically degrades to whatever the slowest path can sustain.
+    // budget therefore pushes the next frame a full budget past its end —
+    // the rate automatically degrades to what the slowest path can sustain.
     this.lastDrawDuration = t1 - t0;
     this.lastFrameTime = t1;
 
-    if (this.queued.size > 0) this._arm();
+    if (this.queued.size > 0) {
+      this.rafId = requestAnimationFrame((t) => this._tick(t));
+    }
   }
 }
 
@@ -136,7 +141,11 @@ export const FRAME_CHANNELS = {
   WEBGPU: 'webgpu',
   WEBGPU_NEEDS_REDRAW: 'webgpu-needs-redraw',
   VIEWPORT: 'viewport',
+  VIEWPORT_ANIM: 'viewport-anim',
   BLUR: 'blur',
+  APP_STATE: 'app-state',
+  APP_FLASH: 'app-flash',
+  APP_RESIZE: 'app-resize',
 };
 
 // Expose globally for ad-hoc debugging from the devtools console.
