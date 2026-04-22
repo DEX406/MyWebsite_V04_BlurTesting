@@ -856,7 +856,7 @@ export class GPURenderer {
       for (const c of [target, ...allTiers]) {
         if (c && !seen.has(c)) { seen.add(c); candidates.push(c); }
       }
-      const entry = this.texCache.getBestReady(candidates, placeholder, item.pixelated).entry;
+      const entry = this.texCache.getBestReady(candidates, placeholder).entry;
       const isReady = entry.ready !== false;
       u[33] = isReady ? 1 : 0;
       const texW = entry.width || item.naturalWidth || item.w;
@@ -1265,7 +1265,7 @@ export class GPURenderer {
         for (const c of [target, ...tiers]) {
           if (c && !seen.has(c)) { seen.add(c); candidates.push(c); }
         }
-        const entry = this.texCache.getBestReady(candidates, placeholder, item.pixelated).entry;
+        const entry = this.texCache.getBestReady(candidates, placeholder).entry;
         if (entry && entry.width > 1) {
           dimW = entry.width;
           dimH = entry.height;

@@ -333,9 +333,6 @@ export function PropertiesPanel({ isAdmin, selectedIds, items, openColorPicker, 
           <Section title="Appearance">
         <div style={{ display: "flex", gap: GAP }}>
           <Toggle label="Shadow" active={itemShadowEnabled(sel)} onClick={() => updateAll({ shadow: !itemShadowEnabled(sel) })} flex />
-          {(type === "image" || type === "video") && (
-            <Toggle label={sel.pixelated ? "Pixelated" : "Smooth"} active={!!sel.pixelated} onClick={() => updateAll({ pixelated: !sel.pixelated })} flex />
-          )}
         </div>
 
         {(type === "text" || type === "link" || type === "shape") && (

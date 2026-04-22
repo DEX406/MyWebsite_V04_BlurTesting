@@ -19,13 +19,12 @@
 
 // Draw `source` centered inside a transparent canvas of `canvasW` × `canvasH`
 // with aspect-preserving contain-fit. Returns the canvas.
-export function fitOntoCanvas(source, srcW, srcH, canvasW, canvasH, pixelated = false) {
+export function fitOntoCanvas(source, srcW, srcH, canvasW, canvasH) {
   const c = document.createElement('canvas');
   c.width = canvasW;
   c.height = canvasH;
   const ctx = c.getContext('2d');
-  ctx.imageSmoothingEnabled = !pixelated;
-  ctx.imageSmoothingQuality = 'high';
+  ctx.imageSmoothingEnabled = false;
   const scale = Math.min(canvasW / srcW, canvasH / srcH);
   const drawW = Math.max(1, Math.round(srcW * scale));
   const drawH = Math.max(1, Math.round(srcH * scale));
