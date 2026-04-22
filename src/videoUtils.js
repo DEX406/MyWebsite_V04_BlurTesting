@@ -12,9 +12,14 @@ export function convertVideoToWebm(file, onProgress) {
     video.preload = 'auto';
 
     const objectUrl = URL.createObjectURL(file);
+    let stream = null;
 
     function cleanup() {
       URL.revokeObjectURL(objectUrl);
+      if (stream) {
+        for (const t of stream.getTracks()) t.stop();
+        stream = null;
+      }
     }
 
     video.onloadedmetadata = () => {
@@ -47,7 +52,7 @@ export function convertVideoToWebm(file, onProgress) {
       // on a timer". Every frame in the output comes from an explicit
       // requestFrame() call, so an un-drawn or stale canvas can never leak
       // into the WebM as a black/empty frame.
-      const stream = canvas.captureStream(0);
+      stream = canvas.captureStream(0);
       const track = stream.getVideoTracks()[0];
       const emitFrame = () => {
         if (track && typeof track.requestFrame === 'function') track.requestFrame();

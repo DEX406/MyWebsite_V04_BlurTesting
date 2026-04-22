@@ -5,7 +5,6 @@ const MAX_HISTORY = 50;
 export function useUndo(setItems, scheduleSave, isAdmin) {
   const undoStack = useRef([]);
   const redoStack = useRef([]);
-  const lastSnapshot = useRef(null);
 
   const pushUndo = useCallback((prevItems) => {
     undoStack.current.push(prevItems);

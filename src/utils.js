@@ -159,19 +159,6 @@ export function hexToRgb(hex) {
   ];
 }
 
-export function hexToRgba(hex, alpha = 1) {
-  const h = hex.replace('#', '');
-  const r = parseInt(h.slice(0, 2), 16), g = parseInt(h.slice(2, 4), 16), b = parseInt(h.slice(4, 6), 16);
-  return `rgba(${r},${g},${b},${alpha})`;
-}
-
-export function applyBg(item) {
-  if (!item.bgColor || item.bgColor === "transparent") return "transparent";
-  const op = item.bgOpacity ?? 1;
-  if (op <= 0) return "transparent";
-  return op >= 1 ? item.bgColor : hexToRgba(item.bgColor, op);
-}
-
 /* ── DOM helpers ── */
 export function isTyping() {
   const tag = document.activeElement?.tagName;
@@ -275,12 +262,3 @@ export function migrateItems(items) {
   });
 }
 
-export function exportBoard(items, palette) {
-  const blob = new Blob([JSON.stringify({ items, palette }, null, 2)], { type: "application/json" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a"); 
-  a.href = url;
-  a.download = `lutz-board-${new Date().toISOString().slice(0, 10)}.json`;
-  a.click();
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
-}

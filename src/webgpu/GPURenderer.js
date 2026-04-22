@@ -1119,6 +1119,14 @@ export class GPURenderer {
 
   // ── Overlay collection (handles, pills, group box) ────────────────────────
 
+  _pushCircle(oCircles, resW, resH, panDpr, panDprY, zoomDpr, wcx, wcy, radius, color) {
+    const u = new Float32Array(12);
+    u[0] = resW; u[1] = resH; u[2] = panDpr; u[3] = panDprY;
+    u[4] = zoomDpr; u[5] = radius; u[6] = wcx; u[7] = wcy;
+    u.set(color, 8);
+    oCircles.push({ uniforms: u });
+  }
+
   _collectItemHandles(item, panDpr, panDprY, zoomDpr, resW, resH, oLines, oCircles) {
     const rot = (item.rotation || 0) * DEG_TO_RAD;
     const cx = item.x + item.w / 2;
@@ -1134,13 +1142,8 @@ export class GPURenderer {
     const BLUE_ROD = [0.173, 0.518, 0.859, 0.7];
     const FILL = [0.761, 0.753, 0.714, 1.0];
 
-    const addCircle = (wcx, wcy, radius, color) => {
-      const u = new Float32Array(12);
-      u[0] = resW; u[1] = resH; u[2] = panDpr; u[3] = panDprY;
-      u[4] = zoomDpr; u[5] = radius; u[6] = wcx; u[7] = wcy;
-      u.set(color, 8);
-      oCircles.push({ uniforms: u });
-    };
+    const addCircle = (wcx, wcy, radius, color) =>
+      this._pushCircle(oCircles, resW, resH, panDpr, panDprY, zoomDpr, wcx, wcy, radius, color);
     const addBordered = (wcx, wcy, r, bw, fill, border) => {
       addCircle(wcx, wcy, r + bw, border);
       addCircle(wcx, wcy, r, fill);
@@ -1192,17 +1195,9 @@ export class GPURenderer {
     const BLUE = [0.173, 0.518, 0.859, 0.85];
     const FILL = [0.761, 0.753, 0.714, 1.0];
 
-    const addCircle = (wcx, wcy, radius, color) => {
-      const u = new Float32Array(12);
-      u[0] = resW; u[1] = resH; u[2] = panDpr; u[3] = panDprY;
-      u[4] = zoomDpr; u[5] = radius; u[6] = wcx; u[7] = wcy;
-      u.set(color, 8);
-      oCircles.push({ uniforms: u });
-    };
-
     // Elbow handle (bordered)
-    addCircle(handleX, handleY, 6.5, BLUE);
-    addCircle(handleX, handleY, 5, FILL);
+    this._pushCircle(oCircles, resW, resH, panDpr, panDprY, zoomDpr, handleX, handleY, 6.5, BLUE);
+    this._pushCircle(oCircles, resW, resH, panDpr, panDprY, zoomDpr, handleX, handleY, 5, FILL);
   }
 
   _collectGroupBox(items, selectedIds, panDpr, panDprY, zoomDpr, resW, resH, oQuads) {
