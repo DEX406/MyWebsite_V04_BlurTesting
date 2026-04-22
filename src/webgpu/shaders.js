@@ -18,7 +18,6 @@ const PRELUDE = /* wgsl */ `
 fn world_to_ndc(world: vec2<f32>, pan: vec2<f32>, zoom: f32, resolution: vec2<f32>) -> vec4<f32> {
 let screen = world * zoom + pan;
 var ndc = screen / resolution * 2.0 - 1.0;
-ndc.y = -ndc.y;
 return vec4<f32>(ndc, 0.0, 1.0);
 }
 
