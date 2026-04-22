@@ -186,7 +186,10 @@ export default function App() {
 
     if (!sharedEl) {
       sharedEl = document.createElement('div');
-      sharedEl.style.cssText = 'position:absolute;top:0;left:0;right:0;bottom:0;pointer-events:none;';
+      // will-change promotes this to its own compositor layer so the
+      // per-frame opacity nudge (below) actually forces a backdrop-filter
+      // re-sample instead of being folded into the parent layer.
+      sharedEl.style.cssText = 'position:absolute;top:0;left:0;right:0;bottom:0;pointer-events:none;will-change:backdrop-filter,opacity;';
       container.appendChild(sharedEl);
       sharedBlurElRef.current = sharedEl;
     }

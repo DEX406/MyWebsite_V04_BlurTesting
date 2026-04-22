@@ -2,12 +2,18 @@
 // visible blur overlay actually produce a new frame. Replaces a continuous
 // rAF nudge that was running at 60fps regardless of underlying media activity.
 //
-// - Videos use requestVideoFrameCallback (fires only when the decoder commits
-//   a frame; auto-pauses when the video is paused or off-screen).
-// - GIFs use ImageDecoder to read per-frame durations and schedule timeouts.
+// - Videos use requestVideoFrameCallback, which fires during the rendering
+//   steps of the frame that will display the new video frame. We invoke the
+//   repaint callback SYNCHRONOUSLY from rVFC so the blur nudge (opacity
+//   toggle, etc.) applies in the same paint as the new video pixels — if we
+//   went through rAF first we'd be one paint late and the blurred half of a
+//   video would always lag its uncovered half by one frame.
+// - GIFs use ImageDecoder to read per-frame durations and schedule timeouts,
+//   then route through the global frameSync since they have no equivalent
+//   of rVFC's "before paint" hook.
 // - When no animated media is under any blur, nothing ticks.
-// - Multiple sources firing in the same animation frame coalesce into one
-//   repaint via requestAnimationFrame.
+// - Multiple videos firing rVFC in the same paint coalesce to one repaint
+//   via _rvfcCoalesced (otherwise two toggles in one paint would cancel out).
 
 import { frameSync, FRAME_CHANNELS } from './frameSync.js';
 
@@ -19,6 +25,7 @@ export class BlurFrameSync {
     this.onRepaint = onRepaint;
     this.subs = new Map();   // src -> { cancel }
     this.scheduled = false;
+    this._rvfcCoalesced = false; // true = already nudged this paint
   }
 
   // sources: Array<{ src, type: 'video'|'gif', el?: HTMLElement }>
@@ -47,15 +54,28 @@ export class BlurFrameSync {
     this.subs.clear();
   }
 
+  // GIF / fallback path: route through the global frame sync so blur
+  // recomposites coalesce with other draws and obey MAX_FRAME_RATE.
   _schedule() {
     if (this.scheduled) return;
     this.scheduled = true;
-    // Route through the global frame sync so blur recomposites coalesce with
-    // WebGPU/viewport draws and obey MAX_FRAME_RATE.
     frameSync.scheduleDraw(FRAME_CHANNELS.BLUR, () => {
       this.scheduled = false;
       this.onRepaint();
     });
+  }
+
+  // Video path: nudge synchronously in the rendering steps of the same
+  // paint that will show the new video frame. Coalesce across multiple
+  // videos so two rVFCs in one paint don't toggle the opacity twice (which
+  // would leave the compositor with no net change and skip the re-sample).
+  _nudgeSync() {
+    if (this._rvfcCoalesced) return;
+    this._rvfcCoalesced = true;
+    this.onRepaint();
+    // Reset after the paint we just nudged has flushed, so the FIRST rVFC
+    // in the next paint is the one that toggles.
+    requestAnimationFrame(() => { this._rvfcCoalesced = false; });
   }
 
   _subscribe({ src, type, el }) {
@@ -63,7 +83,7 @@ export class BlurFrameSync {
       let active = true;
       const tick = () => {
         if (!active) return;
-        this._schedule();
+        this._nudgeSync();
         el.requestVideoFrameCallback(tick);
       };
       el.requestVideoFrameCallback(tick);
