@@ -512,7 +512,7 @@ export default function App() {
   });
 
   useTouchInput({
-    vp, itemsRef, isAdminRef, selectedIdsRef,
+    vp, loading, itemsRef, isAdminRef, selectedIdsRef,
     setItems, setSelectedIds, setEditingTextId,
     setDragging, draggingRef, effectiveSnapRef,
     scheduleSave, animateTo, pushUndo,

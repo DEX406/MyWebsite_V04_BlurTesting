@@ -6,7 +6,7 @@ import { MIN_ZOOM, MAX_ZOOM } from './useViewport.js';
 const TOUCH_TAP_THRESHOLD = 10;
 
 export function useTouchInput({
-  vp,
+  vp, loading,
   itemsRef, isAdminRef, selectedIdsRef,
   setItems, setSelectedIds, setEditingTextId,
   setDragging, draggingRef,
@@ -341,5 +341,5 @@ export function useTouchInput({
       canvas.removeEventListener("touchmove", handleTouchMove);
       canvas.removeEventListener("touchend", handleTouchEnd);
     };
-  }, [handleTouchStart, handleTouchMove, handleTouchEnd]);
+  }, [loading, handleTouchStart, handleTouchMove, handleTouchEnd]);
 }
