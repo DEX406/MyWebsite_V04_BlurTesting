@@ -5,7 +5,6 @@
 // Uniform buffer byte sizes (for JS-side allocation):
 export const GRID_UNIFORM_SIZE = 128;
 export const QUAD_UNIFORM_SIZE = 176;
-export const MATTE_UNIFORM_SIZE = 176; // same layout as quad
 export const LINE_UNIFORM_SIZE = 48;
 export const CIRCLE_UNIFORM_SIZE = 48;
 

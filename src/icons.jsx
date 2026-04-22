@@ -34,10 +34,6 @@ export const ZoomOutIcon = (p) => (
   <I {...p}><path d="M2 9a7 7 0 1 0 14 0A7 7 0 0 0 2 9M14 14l5 5M6 9h6" /></I>
 );
 
-export const FitIcon = (p) => (
-  <I {...p}><path d="M2 7V2h5M13 2h5v5M18 13v5h-5M7 18H2v-5" /></I>
-);
-
 export const TextIcon = (p) => (
   <I {...p}><path d="M3 3h14M10 3v14M6 17h8" /></I>
 );
