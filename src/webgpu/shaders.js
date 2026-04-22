@@ -388,7 +388,7 @@ srcSize:   vec2<f32>,  // UV extent in source texture
 @vertex
 fn vs_main(@location(0) a_pos: vec2<f32>) -> FsVsOutput {
 var out: FsVsOutput;
-out.uv = u.srcOrigin + a_pos * u.srcSize;
+out.uv = u.srcOrigin + vec2<f32>(a_pos.x, 1.0 - a_pos.y) * u.srcSize;
 out.pos = vec4<f32>(a_pos * 2.0 - 1.0, 0.0, 1.0);
 return out;
 }
