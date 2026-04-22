@@ -9,6 +9,8 @@
 // - Multiple sources firing in the same animation frame coalesce into one
 //   repaint via requestAnimationFrame.
 
+import { frameSync, FRAME_CHANNELS } from './frameSync.js';
+
 const GIF_FALLBACK_INTERVAL_MS = 80; // ~12.5fps if ImageDecoder unavailable
 const GIF_MIN_FRAME_MS = 20;         // clamp pathological short frames
 
@@ -48,7 +50,9 @@ export class BlurFrameSync {
   _schedule() {
     if (this.scheduled) return;
     this.scheduled = true;
-    requestAnimationFrame(() => {
+    // Route through the global frame sync so blur recomposites coalesce with
+    // WebGPU/viewport draws and obey MAX_FRAME_RATE.
+    frameSync.scheduleDraw(FRAME_CHANNELS.BLUR, () => {
       this.scheduled = false;
       this.onRepaint();
     });

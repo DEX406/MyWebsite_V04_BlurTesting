@@ -4,11 +4,11 @@
 import { useRef, useCallback, useEffect } from 'react';
 import { GPURenderer } from '../webgpu/GPURenderer.js';
 import { hitTest } from '../webgl/hitTest.js';
+import { frameSync, FRAME_CHANNELS } from '../frameSync.js';
 
 export function useWebGLCanvas() {
   const canvasRef = useRef(null);
   const rendererRef = useRef(null);
-  const rafRef = useRef(0);
   const renderDataRef = useRef(null);
   const initPromiseRef = useRef(null);
 
@@ -34,16 +34,12 @@ export function useWebGLCanvas() {
 
         const renderer = new GPURenderer(canvas, device, context);
         renderer._onNeedsRedraw = () => {
-          const d = renderDataRef.current;
-          if (!d) return;
-          if (!rafRef.current) {
-            rafRef.current = requestAnimationFrame(() => {
-              rafRef.current = 0;
-              if (rendererRef.current && renderDataRef.current) {
-                rendererRef.current.render(renderDataRef.current);
-              }
-            });
-          }
+          if (!renderDataRef.current) return;
+          frameSync.scheduleDraw(FRAME_CHANNELS.WEBGPU_NEEDS_REDRAW, () => {
+            if (rendererRef.current && renderDataRef.current) {
+              rendererRef.current.render(renderDataRef.current);
+            }
+          });
         };
         rendererRef.current = renderer;
 
@@ -64,28 +60,24 @@ export function useWebGLCanvas() {
 
   const requestRender = useCallback((data) => {
     renderDataRef.current = data;
-    if (!rafRef.current) {
-      rafRef.current = requestAnimationFrame(() => {
-        rafRef.current = 0;
-        const renderer = rendererRef.current;
-        const d = renderDataRef.current;
-        if (renderer && d) {
-          renderer.render(d);
-        }
-      });
-    }
+    frameSync.scheduleDraw(FRAME_CHANNELS.WEBGPU, () => {
+      const renderer = rendererRef.current;
+      const d = renderDataRef.current;
+      if (renderer && d) {
+        renderer.render(d);
+      }
+    });
   }, []);
 
   const renderSync = useCallback((data) => {
     renderDataRef.current = data;
-    if (rafRef.current) {
-      cancelAnimationFrame(rafRef.current);
-      rafRef.current = 0;
-    }
     const renderer = rendererRef.current;
-    if (renderer && data) {
-      renderer.render(data);
-    }
+    // Synchronous: callers (App.jsx drawBgRef) need overlays back immediately
+    // to syncOverlays the DOM layer in the same tick. flushSync still updates
+    // frameSync's last-frame timestamp so the throttle stays accurate.
+    frameSync.flushSync(() => {
+      if (renderer && data) renderer.render(data);
+    });
     return renderer?._overlays || [];
   }, []);
 
@@ -102,7 +94,6 @@ export function useWebGLCanvas() {
 
   useEffect(() => {
     return () => {
-      if (rafRef.current) cancelAnimationFrame(rafRef.current);
       if (rendererRef.current) {
         rendererRef.current.destroy();
         rendererRef.current = null;

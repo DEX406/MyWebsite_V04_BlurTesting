@@ -1,4 +1,5 @@
 import { useRef, useCallback } from 'react';
+import { frameSync, FRAME_CHANNELS } from '../frameSync.js';
 
 export const MIN_ZOOM = 0.01;
 export const MAX_ZOOM = 4;
@@ -32,13 +33,13 @@ export function useViewport() {
     }, delay);
   }, []);
 
-  // rAF coalescing — multiple applyTransform calls per frame collapse into one paint
-  const rafIdRef = useRef(0);
+  // Coalescing — multiple applyTransform calls per frame collapse into one paint.
+  // frameSync owns the rAF queue so this draw lands in the same frame as any
+  // WebGPU/blur work scheduled this tick.
   const displaysDirtyRef = useRef(false);
   const interactingRef = useRef(false);
 
   const applyTransformNow = useCallback(() => {
-    rafIdRef.current = 0;
     const { x, y } = panRef.current;
     const z = zoomRef.current;
     if (!interactingRef.current) {
@@ -58,17 +59,13 @@ export function useViewport() {
   }, [scheduleSettled]);
 
   const applyTransform = useCallback(() => {
-    if (!rafIdRef.current) {
-      rafIdRef.current = requestAnimationFrame(applyTransformNow);
-    }
+    frameSync.scheduleDraw(FRAME_CHANNELS.VIEWPORT, applyTransformNow);
   }, [applyTransformNow]);
 
-  // Flush pending rAF immediately — used by animateTo which already runs inside rAF
+  // Used by animateTo which is already inside its own rAF loop — the draw
+  // call that follows uses webgl.renderSync (flushSync) so it bypasses the
+  // queue but still updates the throttle timestamp.
   const applyTransformSync = useCallback(() => {
-    if (rafIdRef.current) {
-      cancelAnimationFrame(rafIdRef.current);
-      rafIdRef.current = 0;
-    }
     applyTransformNow();
   }, [applyTransformNow]);
 
@@ -84,10 +81,8 @@ export function useViewport() {
 
   const updateDisplays = useCallback(() => {
     displaysDirtyRef.current = true;
-    // Will be flushed by the next applyTransform rAF, or schedule our own if needed
-    if (!rafIdRef.current) {
-      rafIdRef.current = requestAnimationFrame(applyTransformNow);
-    }
+    // Piggyback on the same coalesced frame as transform updates.
+    frameSync.scheduleDraw(FRAME_CHANNELS.VIEWPORT, applyTransformNow);
   }, [applyTransformNow]);
 
   const viewCenter = useCallback(() => {

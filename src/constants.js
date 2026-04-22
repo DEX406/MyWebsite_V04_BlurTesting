@@ -19,6 +19,13 @@ export const SNAP_ANGLE = 15; // degrees for angle snapping
 // Shared glass/blur downsample factor (1 = full world-res, 0.5 = half-res).
 export const GLASS_DOWNSAMPLE = 1;
 
+// ── Frame pacing ──
+// Hard ceiling on the global render rate. The frame sync coalesces every
+// rAF-scheduled draw (WebGPU, viewport transform, blur recomposite, …) and
+// will not fire a new frame more often than this. Lower it to throttle the
+// site on weak devices or when battery matters.
+export const MAX_FRAME_RATE = 60;
+
 // ── Text layout constants (shared between CSS textarea and Canvas2D rasterizer) ──
 export const TEXT_PAD_X = 12;    // horizontal padding (px)
 export const TEXT_PAD_Y = 8;     // vertical padding (px)
