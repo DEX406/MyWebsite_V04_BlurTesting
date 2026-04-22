@@ -667,8 +667,8 @@ export default function App() {
               if (resized) toUpload = resized;
             }
             const { url } = await uploadImage(toUpload);
-            if (isGif && !uploadedAsAnimatedWebp) {
-              // Fallback: couldn't convert client-side, uploaded as GIF.
+            if (isGif || uploadedAsAnimatedWebp) {
+              // Use DOM overlay path so animation plays (img element, not GPU texture).
               addGifToCanvas(url);
             } else {
               await addImageToCanvas(url);
@@ -703,7 +703,7 @@ export default function App() {
     try {
       const file = new File([blob], `animated-${Date.now()}.webp`, { type: 'image/webp' });
       const { url } = await uploadImage(file);
-      await addImageToCanvas(url);
+      addGifToCanvas(url);
       setUploadStatus('');
     } catch (err) {
       console.error('Animated upload failed:', err);
