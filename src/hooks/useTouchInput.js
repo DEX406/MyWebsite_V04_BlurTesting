@@ -4,7 +4,7 @@ import { RAD_TO_DEG } from '../constants.js';
 import { MIN_ZOOM, MAX_ZOOM } from './useViewport.js';
 
 const TAP_THRESHOLD = 10;
-const LONG_PRESS_MS = 500;
+const LONG_PRESS_MS = 1500;
 const DOUBLE_TAP_MS = 400;
 
 export function useTouchInput({
