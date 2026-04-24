@@ -44,6 +44,30 @@ export class GPURenderer {
     // Blur effect: world-res textures + intermediates for Gaussian blur (zoom-independent)
     this._blurTextures = new Map(); // itemId → { texture, view, intTexture, intView, width, height }
 
+    // Cached parent CSS size so render() does not force a layout read every frame.
+    // Populated by ResizeObserver; falls back to clientWidth on first use.
+    this._cssW = 0;
+    this._cssH = 0;
+    this._appliedDpr = 0;
+    this._sizeDirty = true;
+    const parent = canvas.parentElement;
+    if (parent && typeof ResizeObserver !== 'undefined') {
+      this._resizeObserver = new ResizeObserver((entries) => {
+        for (const entry of entries) {
+          const box = entry.contentBoxSize?.[0];
+          const w = box ? box.inlineSize : entry.contentRect.width;
+          const h = box ? box.blockSize : entry.contentRect.height;
+          if (w !== this._cssW || h !== this._cssH) {
+            this._cssW = w;
+            this._cssH = h;
+            this._sizeDirty = true;
+            if (this._onNeedsRedraw) this._onNeedsRedraw();
+          }
+        }
+      });
+      this._resizeObserver.observe(parent);
+    }
+
     this._initPipelines();
     this._initBuffers();
   }
@@ -255,10 +279,22 @@ export class GPURenderer {
 
   resize() {
     const dpr = this._scale();
-    const parent = this.canvas.parentElement;
-    if (!parent) return;
-    const w = parent.clientWidth;
-    const h = parent.clientHeight;
+    if (!this._sizeDirty && dpr === this._appliedDpr) return;
+
+    // First call (before ResizeObserver has fired) or no-RO fallback:
+    // pay the one-time layout read, then rely on the observer for updates.
+    if (this._cssW === 0 || this._cssH === 0) {
+      const parent = this.canvas.parentElement;
+      if (!parent) return;
+      this._cssW = parent.clientWidth;
+      this._cssH = parent.clientHeight;
+    }
+
+    const w = this._cssW;
+    const h = this._cssH;
+    this._sizeDirty = false;
+    this._appliedDpr = dpr;
+
     this.canvas.style.width = w + 'px';
     this.canvas.style.height = h + 'px';
     const pw = Math.round(w * dpr);
@@ -1314,6 +1350,10 @@ export class GPURenderer {
   }
 
   destroy() {
+    if (this._resizeObserver) {
+      this._resizeObserver.disconnect();
+      this._resizeObserver = null;
+    }
     this.texCache.destroy();
     this.textRenderer.destroy();
     this.pillRenderer.destroy();

@@ -14,6 +14,10 @@ export function useViewport() {
   const canvasHandlesRef = useRef(null);
   const drawBgRef = useRef(null);  // triggers WebGL render
 
+  // Cached canvas CSS size, written by a ResizeObserver in App.
+  // Avoids getBoundingClientRect() reads in the pan/zoom hot path.
+  const canvasSizeRef = useRef({ width: 0, height: 0 });
+
   const posDisplayRef = useRef(null);
   const zoomDisplayRef = useRef(null);
 
@@ -72,15 +76,26 @@ export function useViewport() {
     applyTransformNow();
   }, [applyTransformNow]);
 
+  // Read cached canvas size, falling back to a one-time layout read if the
+  // ResizeObserver has not populated it yet (initial mount).
+  const getCanvasSize = useCallback(() => {
+    const s = canvasSizeRef.current;
+    if (s.width > 0 && s.height > 0) return s;
+    if (!canvasRef.current) return s;
+    const r = canvasRef.current.getBoundingClientRect();
+    canvasSizeRef.current = { width: r.width, height: r.height };
+    return canvasSizeRef.current;
+  }, []);
+
   const updateDisplaysNow = useCallback(() => {
     if (!canvasRef.current) return;
-    const r = canvasRef.current.getBoundingClientRect();
+    const { width, height } = getCanvasSize();
     const z = zoomRef.current;
-    const cx = Math.round((-panRef.current.x + r.width / 2) / z);
-    const cy = Math.round((-panRef.current.y + r.height / 2) / z);
+    const cx = Math.round((-panRef.current.x + width / 2) / z);
+    const cy = Math.round((-panRef.current.y + height / 2) / z);
     if (posDisplayRef.current) posDisplayRef.current.textContent = `X ${cx}\nY ${cy}`;
     if (zoomDisplayRef.current) zoomDisplayRef.current.textContent = `${Math.round(z * 100)}%`;
-  }, []);
+  }, [getCanvasSize]);
 
   const updateDisplays = useCallback(() => {
     displaysDirtyRef.current = true;
@@ -92,22 +107,22 @@ export function useViewport() {
 
   const viewCenter = useCallback(() => {
     if (!canvasRef.current) return { x: 300, y: 300 };
-    const r = canvasRef.current.getBoundingClientRect();
-    return { x: (-panRef.current.x + r.width / 2) / zoomRef.current, y: (-panRef.current.y + r.height / 2) / zoomRef.current };
-  }, []);
+    const { width, height } = getCanvasSize();
+    return { x: (-panRef.current.x + width / 2) / zoomRef.current, y: (-panRef.current.y + height / 2) / zoomRef.current };
+  }, [getCanvasSize]);
 
   const zoomTo = useCallback((nz) => {
     nz = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, nz));
     if (!canvasRef.current) return;
-    const rect = canvasRef.current.getBoundingClientRect();
-    const cx = rect.width / 2, cy = rect.height / 2;
+    const { width, height } = getCanvasSize();
+    const cx = width / 2, cy = height / 2;
     const r = nz / zoomRef.current;
     const { x: px, y: py } = panRef.current;
     panRef.current = { x: cx - r * (cx - px), y: cy - r * (cy - py) };
     zoomRef.current = nz;
     applyTransform();
     updateDisplays();
-  }, [applyTransform, updateDisplays]);
+  }, [applyTransform, updateDisplays, getCanvasSize]);
 
   const animateTo = useCallback((targetPan, targetZoom, duration = 700) => {
     const startPan = { ...panRef.current };
@@ -128,17 +143,16 @@ export function useViewport() {
 
   const goHome = useCallback(() => {
     if (!canvasRef.current) return;
+    const { width, height } = getCanvasSize();
     const home = homeViewRef.current;
     if (!home) {
       // Default: center on origin at 100%
-      const rect = canvasRef.current.getBoundingClientRect();
-      animateTo({ x: rect.width / 2, y: rect.height / 2 }, 1);
+      animateTo({ x: width / 2, y: height / 2 }, 1);
       return;
     }
-    const rect = canvasRef.current.getBoundingClientRect();
-    const targetPan = { x: rect.width / 2 - home.x * home.zoom, y: rect.height / 2 - home.y * home.zoom };
+    const targetPan = { x: width / 2 - home.x * home.zoom, y: height / 2 - home.y * home.zoom };
     animateTo(targetPan, home.zoom);
-  }, [animateTo]);
+  }, [animateTo, getCanvasSize]);
 
   const setHome = useCallback(() => {
     const center = viewCenter();
@@ -149,20 +163,21 @@ export function useViewport() {
   // Returns the visible rectangle in world (canvas) coordinates
   const getViewportBounds = useCallback(() => {
     if (!canvasRef.current) return { left: 0, top: 0, right: 1920, bottom: 1080 };
-    const rect = canvasRef.current.getBoundingClientRect();
+    const { width, height } = getCanvasSize();
     const z = zoomRef.current;
     const { x: px, y: py } = panRef.current;
     return {
       left: -px / z,
       top: -py / z,
-      right: (-px + rect.width) / z,
-      bottom: (-py + rect.height) / z,
+      right: (-px + width) / z,
+      bottom: (-py + height) / z,
     };
-  }, []);
+  }, [getCanvasSize]);
 
   return {
     panRef, zoomRef, isPanningRef, panStartRef, homeViewRef,
     canvasRef, canvasHandlesRef, drawBgRef,
+    canvasSizeRef,
     posDisplayRef, zoomDisplayRef,
     applyTransform, updateDisplays, viewCenter, zoomTo, animateTo, goHome, setHome,
     getViewportBounds, onSettledRef,

@@ -351,11 +351,23 @@ export default function App() {
     return () => clearTimeout(timeoutId);
   }, [items]);
 
-  // Re-render on viewport container resize
+  // Re-render on viewport container resize, and cache the size so pan/zoom
+  // handlers never have to force a layout read.
   useEffect(() => {
     const el = canvasRef.current;
     if (!el) return;
-    const ro = new ResizeObserver(() => { if (drawBgRef.current) drawBgRef.current(); });
+    // Seed the cache synchronously so the first pan frame already has values.
+    const rect = el.getBoundingClientRect();
+    vp.canvasSizeRef.current = { width: rect.width, height: rect.height };
+    const ro = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        const box = entry.contentBoxSize?.[0];
+        const width = box ? box.inlineSize : entry.contentRect.width;
+        const height = box ? box.blockSize : entry.contentRect.height;
+        vp.canvasSizeRef.current = { width, height };
+      }
+      if (drawBgRef.current) drawBgRef.current();
+    });
     ro.observe(el);
     return () => ro.disconnect();
   }, []);
