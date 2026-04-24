@@ -66,19 +66,31 @@ export class TextureCache {
   }
 
   _evict() {
+    // How many entries we're over the soft cap.
     let toEvict = this.cache.size - MAX_TEXTURES;
     if (toEvict <= 0) return;
-    // LRU eviction: sort by lastUsed ascending so the least-recently-used entries
-    // are removed first. Placeholders are protected — they only go if all
-    // non-placeholders have already been reclaimed. This keeps on-screen textures
-    // alive even if they were loaded early in the session.
+  
+    // Anything touched within this window is considered "in use this frame".
+    // Evicting such entries causes a reload → onTextureReady → render → reload
+    // thrash loop at zoom levels where the working set exceeds MAX_TEXTURES.
+    const now = performance.now();
+    const FRAME_WINDOW_MS = 100;
+  
+    // Sort: non-placeholders before placeholders (placeholders evicted last),
+    // then by lastUsed ascending (oldest first).
     const entries = [...this.cache.entries()];
     entries.sort((a, b) => {
       if (a[1].isPlaceholder !== b[1].isPlaceholder) return a[1].isPlaceholder ? 1 : -1;
       return (a[1].lastUsed || 0) - (b[1].lastUsed || 0);
     });
+  
     for (let i = 0; i < entries.length && toEvict > 0; i++) {
       const [url, entry] = entries[i];
+      // Skip entries referenced in the current render cycle — evicting them
+      // would trigger an immediate reload and restart the thrash loop.
+      // If every entry is fresh, we soft-overflow past MAX_TEXTURES until
+      // some textures genuinely fall out of use.
+      if ((entry.lastUsed || 0) > now - FRAME_WINDOW_MS) continue;
       entry.tex.destroy();
       this.cache.delete(url);
       toEvict--;
