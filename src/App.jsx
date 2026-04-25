@@ -315,6 +315,23 @@ export default function App() {
       const panX = vp.panRef.current.x;
       const panY = vp.panRef.current.y;
       const zoom = vp.zoomRef.current;
+
+      // Sync DOM textarea overlay in real time when editing an item being dragged/resized/rotated
+      const ta = document.querySelector('textarea[data-ui]');
+      const o = override?.id === editingTextIdRef.current && override.props;
+      if (ta && o) Object.assign(ta.style, {
+        ...(o.x != null && { left: o.x + 'px' }),
+        ...(o.y != null && { top: o.y + 'px' }),
+        ...(o.w != null && { width: o.w + 'px' }),
+        ...(o.h != null && { height: o.h + 'px' }),
+        ...(o.rotation != null && { transform: `rotate(${o.rotation}deg)` }),
+      });
+      const s = drag?.itemsStartMap.get(editingTextIdRef.current);
+      if (ta && s && delta) Object.assign(ta.style, {
+        left: snap(s.x + delta.dx, effectiveSnapRef.current) + 'px',
+        top: snap(s.y + delta.dy, effectiveSnapRef.current) + 'px',
+      });
+
       const overlays = webgl.renderSync({
         items: renderItems,
         panX, panY, zoom,
